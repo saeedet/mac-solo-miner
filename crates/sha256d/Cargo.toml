@@ -1,0 +1,12 @@
+[package]
+name = "sha256d"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "SHA-256 and double-SHA-256, with a readable reference implementation and an Apple Silicon hardware-accelerated one"
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,13 @@
+# Rust build output
+/target/
+
+# Never commit chain data. The node's datadir lives outside the repo
+# (~/.bitcoin-solo by default), but guard against it being moved here.
+/chaindata/
+*.dat
+.cookie
+
+# Payout addresses and any key material. See docs/ for why these never
+# belong in version control.
+/secrets/
+*.env

@@ -1,0 +1,35 @@
+# Workspace root for solo-mac-miner.
+#
+# This is a "virtual manifest": it defines no package of its own, it only
+# groups the crates under crates/ so they share one target/ directory, one
+# lockfile, and one set of dependency versions.
+#
+# Each crate is deliberately small and single-purpose. See README.md for the
+# map of which crate does what.
+
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+
+# Dependency versions are pinned once here and referenced from each crate as
+# `foo.workspace = true`, so two crates can never disagree about a version.
+[workspace.dependencies]
+
+# Lints applied to every crate in the workspace.
+[workspace.lints.rust]
+# The whole point of this codebase is to be readable, so undocumented public
+# items are a build warning rather than a matter of discipline.
+missing_docs = "warn"
+# Require an explicit `unsafe {}` block even inside an `unsafe fn`, so the
+# exact line doing something dangerous is always visible.
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+# Every `unsafe` block must carry a `// SAFETY:` comment explaining why it is
+# sound. We use SIMD intrinsics in the hasher; this keeps that honest.
+undocumented_unsafe_blocks = "warn"
