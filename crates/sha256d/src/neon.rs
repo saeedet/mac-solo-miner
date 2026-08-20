@@ -36,7 +36,7 @@ pub fn is_available() -> bool {
 ///
 /// The CPU must support the `sha2` target feature; check [`is_available`].
 #[target_feature(enable = "sha2")]
-unsafe fn compress_block(state: &mut [u32; 8], block: &[u8; 64]) {
+pub(crate) unsafe fn compress_block(state: &mut [u32; 8], block: &[u8; 64]) {
     // SAFETY: `state` is 8 u32s so the two 4-lane loads at offsets 0 and 4 are
     // in bounds; `block` is 64 bytes so the four 16-byte loads are in bounds;
     // `K` is 64 u32s so `group * 4` for group < 16 stays in bounds. The sha2

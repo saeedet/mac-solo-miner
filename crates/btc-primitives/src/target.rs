@@ -104,13 +104,24 @@ impl Target {
     ///
     /// This is the entire win condition of mining, and it is two lines long.
     ///
-    /// The hash is converted to display order first, because that is its
-    /// big-endian numeric form. Once both sides are big-endian, a plain
-    /// byte-wise comparison *is* the 256-bit numeric comparison, since
-    /// lexicographic order on equal-length big-endian byte strings matches
-    /// numeric order.
+    /// The hash is stored least-significant-byte-first and the target
+    /// most-significant-first, so the two are walked from opposite ends. The
+    /// comparison stops at the first differing byte, which for a losing hash is
+    /// almost always the very first one — that matters, because this runs once
+    /// per hash in the mining loop, and materialising a reversed copy each time
+    /// would cost more than the comparison.
     pub fn is_met_by(&self, hash: &Sha256dHash) -> bool {
-        hash.to_display_bytes() <= self.0
+        let bytes = hash.as_internal_bytes();
+
+        for i in 0..32 {
+            // bytes[31 - i] is the hash's i-th most significant byte.
+            let (hash_byte, target_byte) = (bytes[31 - i], self.0[i]);
+            if hash_byte != target_byte {
+                return hash_byte < target_byte;
+            }
+        }
+
+        true // exactly equal to the target, which counts as meeting it
     }
 
     /// The difficulty this target represents, relative to difficulty 1.

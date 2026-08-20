@@ -15,13 +15,25 @@ At a network difficulty of ~127.5T, expected time to find a block is
 
 | Hardware | Hashrate | Expected time to a block |
 |---|---|---|
-| M3 CPU, all 8 cores | ~70 MH/s (projected) | ~250,000,000 years |
+| M3 CPU, all 8 cores | **96.6 MH/s** (measured) | ~180,000,000 years |
 | Bitaxe Gamma | 1.2 TH/s | ~14,500 years |
 
-The M3 figure is a projection from a *measured* Phase 1 baseline of 6.0 MH/s on
-one core (`cargo run --release --example hashrate -p sha256d`), assuming Phase 5
-lands midstate caching and multithreading across 4 performance + 4 efficiency
-cores. An earlier guess of 200 MH/s was optimistic and has been corrected.
+The M3 figure is measured, not projected — run
+`cargo run --release --example hashrate -p sha256d` to reproduce it. Getting
+there took three steps from a 6.0 MH/s Phase 1 baseline:
+
+| | Single core | |
+|---|---|---|
+| Portable reference | 1.4 MH/s | mirrors FIPS 180-4, not trying to be fast |
+| ARMv8 crypto extensions | 6.0 MH/s | hardware SHA-256 instructions |
+| \+ midstate, no allocation | 17.9 MH/s | the header's first 64 bytes never change |
+
+and then near-linear scaling: 34.1 MH/s on 2 threads, 68.5 on 4, 96.6 on 8. The
+step from 4 to 8 adds less than the first four because the M3's second four
+cores are efficiency cores.
+
+An earlier guess of 200 MH/s was optimistic; a later projection of 70 MH/s was
+pessimistic. Both have been replaced by measurement.
 
 This is a lottery ticket. It is not an income stream. Mining is *memoryless*:
 every hash is an independent trial, so stopping and restarting costs nothing,
@@ -61,7 +73,7 @@ without the pool changing at all.
 - [x] **2** — `btc-primitives`: rebuilds a real block's merkle root from its txids
 - [x] **3** — Monolithic regtest miner — *bitcoind accepts a block we mined*
 - [x] **4** — Split into `solo-pool` + `mac-miner` over Stratum V1
-- [ ] **5** — Optimise: midstate, ARM crypto extensions, multithreading
+- [x] **5** — Optimise: midstate, ARM crypto extensions, multithreading
 - [ ] **6** — testnet4 — *find a real block on a public network*
 - [ ] **7** — Mainnet pruned node, "lottery mode"
 
@@ -100,6 +112,9 @@ cargo run --release -p solo-pool -- --network regtest
 ```bash
 cargo run --release -p mac-miner -- --pool 127.0.0.1:3333 --worker mac.0
 ```
+
+The miner uses one thread per logical core by default; `--threads N` overrides
+it.
 
 The pool serves Stratum V1, so `mac-miner` is replaceable: point an ASIC at
 port 3333 instead and nothing on the pool side changes. That is the whole reason

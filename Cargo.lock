@@ -45,6 +45,7 @@ name = "mining"
 version = "0.1.0"
 dependencies = [
  "btc-primitives",
+ "sha256d",
 ]
 
 [[package]]
