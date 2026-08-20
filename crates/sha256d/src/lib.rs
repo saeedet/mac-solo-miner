@@ -36,7 +36,11 @@
 mod constants;
 mod padding;
 
+pub mod midstate;
+
 pub mod reference;
+
+pub use midstate::HeaderHasher;
 
 #[cfg(target_arch = "aarch64")]
 pub mod neon;

@@ -85,6 +85,31 @@ impl Sha256dHash {
         bytes
     }
 
+    /// Compares two hashes as 256-bit numbers.
+    ///
+    /// Named rather than provided through `Ord` on purpose: the internal bytes
+    /// are least-significant-first, so the derived byte-wise ordering would be
+    /// wrong, and silently so. Requiring the explicit call means nobody sorts
+    /// hashes by accident and gets a plausible-looking wrong answer.
+    ///
+    /// Walks from the most significant byte and stops at the first difference,
+    /// so in the mining loop — where hashes differ almost immediately — this
+    /// costs one or two comparisons rather than reversing 32 bytes.
+    pub fn numeric_cmp(&self, other: &Self) -> core::cmp::Ordering {
+        for i in (0..32).rev() {
+            match self.0[i].cmp(&other.0[i]) {
+                core::cmp::Ordering::Equal => continue,
+                ordering => return ordering,
+            }
+        }
+        core::cmp::Ordering::Equal
+    }
+
+    /// Whether this hash is numerically smaller than `other`.
+    pub fn is_below(&self, other: &Self) -> bool {
+        self.numeric_cmp(other) == core::cmp::Ordering::Less
+    }
+
     /// Counts leading zero **bits** as a human reading the displayed hash would.
     ///
     /// This is the "how close did I get" number a solo miner cares about: a

@@ -13,6 +13,7 @@
 //! Bitaxe means pointing that device at the pool and stopping this process.
 
 mod connection;
+mod stats;
 mod work;
 mod worker;
 
@@ -23,10 +24,14 @@ use btc_primitives::{Target, hex};
 use serde_json::{Value, json};
 use stratum::{Incoming, Job, Request, method};
 
+use stats::Stats;
 use work::{Work, WorkState};
 
 /// How long to wait for the pool to answer the handshake.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How often to print a status line.
+const REPORT_INTERVAL: Duration = Duration::from_secs(10);
 
 fn main() {
     if let Err(error) = run() {
@@ -36,7 +41,8 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let (pool_address, worker_name) = parse_args()?;
+    let options = parse_args()?;
+    let (pool_address, worker_name) = (options.pool, options.worker);
 
     println!("connecting to {pool_address}");
     let connection = connection::connect(&pool_address)?;
@@ -76,11 +82,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- Run ----------------------------------------------------------------
     let state = Arc::new(WorkState::new());
+    let stats = Arc::new(Stats::new());
+
+    println!("hashing on {} threads\n", options.threads);
+
+    worker::spawn(
+        Arc::clone(&state),
+        Arc::clone(&stats),
+        connection.outbound.clone(),
+        worker_name,
+        options.threads,
+    );
 
     {
-        let state = Arc::clone(&state);
-        let outbound = connection.outbound.clone();
-        std::thread::spawn(move || worker::run(state, outbound, worker_name));
+        let stats = Arc::clone(&stats);
+        std::thread::spawn(move || report_forever(&stats));
     }
 
     // The main thread becomes the network loop: everything the pool sends from
@@ -111,6 +127,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("the pool closed the connection");
     Ok(())
+}
+
+/// Prints a status line every [`REPORT_INTERVAL`].
+///
+/// Runs on its own thread so the mining threads never spend time on formatting,
+/// and so the interval stays honest regardless of how long a batch takes.
+fn report_forever(stats: &Stats) {
+    let mut previous_hashes = 0u64;
+
+    loop {
+        std::thread::sleep(REPORT_INTERVAL);
+
+        let total = stats.total_hashes();
+        let recent = total - previous_hashes;
+        previous_hashes = total;
+
+        let (best, zero_bits) = stats.best();
+
+        println!(
+            "{:>7.2} MH/s   avg {:>7.2} MH/s   total {:>8.1}M   best {zero_bits} zero bits  {best}",
+            recent as f64 / REPORT_INTERVAL.as_secs_f64() / 1e6,
+            stats.average_hashrate() / 1e6,
+            total as f64 / 1e6,
+        );
+    }
 }
 
 /// Installs a new job, replacing whatever the miner was working on.
@@ -186,24 +227,47 @@ fn parse_subscription(result: &Value) -> Result<(Vec<u8>, usize), Box<dyn std::e
     Ok((extranonce1, extranonce2_size))
 }
 
-fn parse_args() -> Result<(String, String), Box<dyn std::error::Error>> {
-    let mut pool = "127.0.0.1:3333".to_owned();
-    let mut worker = "mac".to_owned();
+/// Command-line options.
+struct Options {
+    pool: String,
+    worker: String,
+    threads: usize,
+}
+
+fn parse_args() -> Result<Options, Box<dyn std::error::Error>> {
+    // One thread per logical core by default. On an M3 that is four performance
+    // cores and four efficiency ones; the efficiency cores hash more slowly but
+    // still add throughput, and the scheduler places threads better than a
+    // fixed guess would.
+    let default_threads = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get);
+
+    let mut options = Options {
+        pool: "127.0.0.1:3333".to_owned(),
+        worker: "mac".to_owned(),
+        threads: default_threads,
+    };
 
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
 
         match flag.as_str() {
-            "--pool" => pool = value()?,
-            "--worker" => worker = value()?,
+            "--pool" => options.pool = value()?,
+            "--worker" => options.worker = value()?,
+            "--threads" => {
+                options.threads = value()?.parse()?;
+                if options.threads == 0 {
+                    return Err("--threads must be at least 1".into());
+                }
+            }
             "--help" | "-h" => {
-                println!("mac-miner [--pool ADDR] [--worker NAME]");
+                println!("mac-miner [--pool ADDR] [--worker NAME] [--threads N]");
                 std::process::exit(0);
             }
             other => return Err(format!("unknown option {other:?}").into()),
         }
     }
 
-    Ok((pool, worker))
+    Ok(options)
 }

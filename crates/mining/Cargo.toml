@@ -8,6 +8,7 @@ description = "Coinbase construction, block assembly, and the nonce search"
 
 [dependencies]
 btc-primitives.workspace = true
+sha256d.workspace = true
 
 [lints]
 workspace = true

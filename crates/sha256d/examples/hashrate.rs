@@ -63,8 +63,82 @@ fn main() {
         println!("neon (ARMv8 crypto)      unavailable on this CPU");
     }
 
+    // The midstate path is measured differently: the hasher is built once,
+    // outside the timed loop, exactly as the mining loop uses it.
+    {
+        let hasher = sha256d::HeaderHasher::new(&HEADER);
+        let iterations = 50_000_000u64;
+
+        let start = Instant::now();
+        for nonce in 0..iterations {
+            black_box(hasher.hash(black_box(nonce as u32)));
+        }
+        let elapsed = start.elapsed();
+
+        let rate = iterations as f64 / elapsed.as_secs_f64();
+        println!(
+            "{:<24} {:>10.2} MH/s   ({iterations} hashes in {elapsed:.2?})",
+            "midstate + neon", rate / 1e6
+        );
+    }
+
     println!(
-        "\nNote: this still allocates a padding buffer per hash and re-hashes\n\
-         all 80 bytes every time. Phase 5 removes both."
+        "\nThe first two re-hash all 80 bytes and allocate a padding buffer per\n\
+         call. The third caches the first block's compression, which is constant\n\
+         across a nonce sweep, and allocates nothing.\n"
     );
+
+    // --- Scaling across cores ------------------------------------------------
+    //
+    // Each thread gets its own hasher, exactly as the miner gives each thread
+    // its own extranonce. Nothing is shared, so this measures the machine
+    // rather than any contention we introduced.
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    println!("scaling across cores ({cores} available)");
+
+    for threads in scaling_steps(cores) {
+        let per_thread = 20_000_000u64;
+
+        let start = Instant::now();
+        let handles: Vec<_> = (0..threads)
+            .map(|index| {
+                std::thread::spawn(move || {
+                    // A distinct header per thread, as distinct extranonces
+                    // would give in the real miner.
+                    let mut header = HEADER;
+                    header[36] = index as u8;
+
+                    let hasher = sha256d::HeaderHasher::new(&header);
+                    for nonce in 0..per_thread {
+                        black_box(hasher.hash(black_box(nonce as u32)));
+                    }
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().expect("mining thread panicked");
+        }
+        let elapsed = start.elapsed();
+
+        let total = per_thread * threads as u64;
+        let rate = total as f64 / elapsed.as_secs_f64();
+        println!("{threads:>3} threads {:>10.2} MH/s", rate / 1e6);
+    }
+}
+
+/// Thread counts worth measuring: powers of two up to the core count.
+///
+/// On an M3 this gives 1, 2, 4, 8 — and the step from 4 to 8 is the interesting
+/// one, because the second four are efficiency cores rather than performance
+/// cores and do not add a full core's worth of throughput.
+fn scaling_steps(cores: usize) -> Vec<usize> {
+    let mut steps = Vec::new();
+    let mut threads = 1;
+    while threads < cores {
+        steps.push(threads);
+        threads *= 2;
+    }
+    steps.push(cores);
+    steps
 }
