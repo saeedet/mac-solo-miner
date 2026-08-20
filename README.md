@@ -15,8 +15,13 @@ At a network difficulty of ~127.5T, expected time to find a block is
 
 | Hardware | Hashrate | Expected time to a block |
 |---|---|---|
-| M3 CPU, all 8 cores | ~200 MH/s (estimate) | ~87,000,000 years |
+| M3 CPU, all 8 cores | ~70 MH/s (projected) | ~250,000,000 years |
 | Bitaxe Gamma | 1.2 TH/s | ~14,500 years |
+
+The M3 figure is a projection from a *measured* Phase 1 baseline of 6.0 MH/s on
+one core (`cargo run --release --example hashrate -p sha256d`), assuming Phase 5
+lands midstate caching and multithreading across 4 performance + 4 efficiency
+cores. An earlier guess of 200 MH/s was optimistic and has been corrected.
 
 This is a lottery ticket. It is not an income stream. Mining is *memoryless*:
 every hash is an independent trial, so stopping and restarting costs nothing,
@@ -50,7 +55,7 @@ without the pool changing at all.
 ## Phases
 
 - [x] **0** — Toolchains, repo skeleton, regtest node running
-- [ ] **1** — `sha256d`: reproduces the genesis and block-100000 hashes
+- [x] **1** — `sha256d`: reproduces the genesis and block-100000 hashes
 - [ ] **2** — `btc-primitives`: rebuilds a real block's merkle root from its txids
 - [ ] **3** — Monolithic regtest miner — *bitcoind accepts a block we mined*
 - [ ] **4** — Split into `solo-pool` + `mac-miner` over Stratum V1
