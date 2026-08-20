@@ -50,9 +50,9 @@ without the pool changing at all.
 | `bitcoind-rpc` | Typed JSON-RPC client for `getblocktemplate` / `submitblock`. Cookie auth; hand-rolled HTTP and base64. |
 | `mining` | Coinbase construction, block assembly, nonce search. Pure, no I/O. |
 | `regtest-miner` | End-to-end miner for a local regtest chain. |
-| `stratum` | Stratum V1 wire types, shared by pool and miner so they cannot disagree. |
-| `pool` | The solo mining pool (`solo-pool`). |
-| `miner` | The hashing client (`mac-miner`). |
+| `stratum` | Stratum V1 wire types, shared by pool and miner so they cannot disagree. Owns the byte-order conventions. |
+| `solo-pool` | The solo mining pool: bitcoind on one side, Stratum on the other. |
+| `mac-miner` | The hashing client. Knows nothing about blocks or the node. |
 
 ## Phases
 
@@ -60,7 +60,7 @@ without the pool changing at all.
 - [x] **1** — `sha256d`: reproduces the genesis and block-100000 hashes
 - [x] **2** — `btc-primitives`: rebuilds a real block's merkle root from its txids
 - [x] **3** — Monolithic regtest miner — *bitcoind accepts a block we mined*
-- [ ] **4** — Split into `solo-pool` + `mac-miner` over Stratum V1
+- [x] **4** — Split into `solo-pool` + `mac-miner` over Stratum V1
 - [ ] **5** — Optimise: midstate, ARM crypto extensions, multithreading
 - [ ] **6** — testnet4 — *find a real block on a public network*
 - [ ] **7** — Mainnet pruned node, "lottery mode"
@@ -88,6 +88,22 @@ Regtest difficulty is trivial — the target covers roughly half the hash space,
 so a block takes a handful of attempts and 111 blocks take under a second. Every
 consensus rule that applies on mainnet applies here too, so a block regtest
 accepts is wrong in no way it is being lenient about.
+
+### Run the pool and a miner
+
+Two processes, real TCP between them:
+
+```bash
+cargo run --release -p solo-pool -- --network regtest
+```
+
+```bash
+cargo run --release -p mac-miner -- --pool 127.0.0.1:3333 --worker mac.0
+```
+
+The pool serves Stratum V1, so `mac-miner` is replaceable: point an ASIC at
+port 3333 instead and nothing on the pool side changes. That is the whole reason
+the split exists.
 
 ### Measure the hasher
 
