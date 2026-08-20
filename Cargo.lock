@@ -3,5 +3,12 @@
 version = 4
 
 [[package]]
+name = "btc-primitives"
+version = "0.1.0"
+dependencies = [
+ "sha256d",
+]
+
+[[package]]
 name = "sha256d"
 version = "0.1.0"

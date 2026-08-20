@@ -46,7 +46,7 @@ without the pool changing at all.
 | Crate | Responsibility |
 |---|---|
 | `sha256d` | SHA-256 and double-SHA-256. Readable reference impl + ARM crypto-extension impl, tested against each other. |
-| `btc-primitives` | Block headers, transactions, varints, merkle trees, difficulty targets. Pure, no I/O. |
+| `btc-primitives` | Block headers, transactions, varints, merkle trees, difficulty targets. Pure, no I/O. Byte order is enforced by the type system. |
 | `bitcoind-rpc` | Typed JSON-RPC client for `getblocktemplate` / `submitblock`. |
 | `stratum` | Stratum V1 wire types, shared by pool and miner so they cannot disagree. |
 | `pool` | The solo mining pool (`solo-pool`). |
@@ -56,7 +56,7 @@ without the pool changing at all.
 
 - [x] **0** — Toolchains, repo skeleton, regtest node running
 - [x] **1** — `sha256d`: reproduces the genesis and block-100000 hashes
-- [ ] **2** — `btc-primitives`: rebuilds a real block's merkle root from its txids
+- [x] **2** — `btc-primitives`: rebuilds a real block's merkle root from its txids
 - [ ] **3** — Monolithic regtest miner — *bitcoind accepts a block we mined*
 - [ ] **4** — Split into `solo-pool` + `mac-miner` over Stratum V1
 - [ ] **5** — Optimise: midstate, ARM crypto extensions, multithreading

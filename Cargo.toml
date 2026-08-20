@@ -19,6 +19,8 @@ license = "MIT"
 # Dependency versions are pinned once here and referenced from each crate as
 # `foo.workspace = true`, so two crates can never disagree about a version.
 [workspace.dependencies]
+sha256d = { path = "crates/sha256d" }
+btc-primitives = { path = "crates/btc-primitives" }
 
 # Lints applied to every crate in the workspace.
 [workspace.lints.rust]

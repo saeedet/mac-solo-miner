@@ -1,0 +1,13 @@
+[package]
+name = "btc-primitives"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Bitcoin data structures: hashes, varints, transactions, merkle trees, difficulty targets"
+
+[dependencies]
+sha256d.workspace = true
+
+[lints]
+workspace = true
