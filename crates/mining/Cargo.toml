@@ -1,0 +1,13 @@
+[package]
+name = "mining"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Coinbase construction, block assembly, and the nonce search"
+
+[dependencies]
+btc-primitives.workspace = true
+
+[lints]
+workspace = true

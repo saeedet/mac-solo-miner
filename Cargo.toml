@@ -21,6 +21,14 @@ license = "MIT"
 [workspace.dependencies]
 sha256d = { path = "crates/sha256d" }
 btc-primitives = { path = "crates/btc-primitives" }
+bitcoind-rpc = { path = "crates/bitcoind-rpc" }
+mining = { path = "crates/mining" }
+
+# JSON only. Bitcoin Core's RPC speaks JSON-RPC 1.0, and hand-rolling a parser
+# for `getblocktemplate`'s deeply-nested optional fields would teach nothing
+# about Bitcoin. Everything Bitcoin-specific is still written here.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # Lints applied to every crate in the workspace.
 [workspace.lints.rust]

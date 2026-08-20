@@ -47,7 +47,9 @@ without the pool changing at all.
 |---|---|
 | `sha256d` | SHA-256 and double-SHA-256. Readable reference impl + ARM crypto-extension impl, tested against each other. |
 | `btc-primitives` | Block headers, transactions, varints, merkle trees, difficulty targets. Pure, no I/O. Byte order is enforced by the type system. |
-| `bitcoind-rpc` | Typed JSON-RPC client for `getblocktemplate` / `submitblock`. |
+| `bitcoind-rpc` | Typed JSON-RPC client for `getblocktemplate` / `submitblock`. Cookie auth; hand-rolled HTTP and base64. |
+| `mining` | Coinbase construction, block assembly, nonce search. Pure, no I/O. |
+| `regtest-miner` | End-to-end miner for a local regtest chain. |
 | `stratum` | Stratum V1 wire types, shared by pool and miner so they cannot disagree. |
 | `pool` | The solo mining pool (`solo-pool`). |
 | `miner` | The hashing client (`mac-miner`). |
@@ -57,7 +59,7 @@ without the pool changing at all.
 - [x] **0** — Toolchains, repo skeleton, regtest node running
 - [x] **1** — `sha256d`: reproduces the genesis and block-100000 hashes
 - [x] **2** — `btc-primitives`: rebuilds a real block's merkle root from its txids
-- [ ] **3** — Monolithic regtest miner — *bitcoind accepts a block we mined*
+- [x] **3** — Monolithic regtest miner — *bitcoind accepts a block we mined*
 - [ ] **4** — Split into `solo-pool` + `mac-miner` over Stratum V1
 - [ ] **5** — Optimise: midstate, ARM crypto extensions, multithreading
 - [ ] **6** — testnet4 — *find a real block on a public network*
@@ -73,3 +75,22 @@ without the pool changing at all.
 
 Chain data lives in `~/.bitcoin-solo`, deliberately outside both this repo and
 Bitcoin Core's default datadir.
+
+### Mine some blocks
+
+With the regtest node running:
+
+```bash
+cargo run --release -p regtest-miner -- 10
+```
+
+Regtest difficulty is trivial — the target covers roughly half the hash space,
+so a block takes a handful of attempts and 111 blocks take under a second. Every
+consensus rule that applies on mainnet applies here too, so a block regtest
+accepts is wrong in no way it is being lenient about.
+
+### Measure the hasher
+
+```bash
+cargo run --release --example hashrate -p sha256d
+```

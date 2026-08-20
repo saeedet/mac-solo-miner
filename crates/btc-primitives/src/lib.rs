@@ -18,6 +18,7 @@
 
 pub mod hash;
 pub mod header;
+pub mod hex;
 pub mod merkle;
 pub mod reader;
 pub mod target;

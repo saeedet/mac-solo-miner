@@ -1,0 +1,15 @@
+[package]
+name = "regtest-miner"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Mines blocks on a local regtest chain, end to end"
+
+[dependencies]
+btc-primitives.workspace = true
+bitcoind-rpc.workspace = true
+mining.workspace = true
+
+[lints]
+workspace = true
