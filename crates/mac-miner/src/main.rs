@@ -1,0 +1,209 @@
+//! A Stratum V1 mining client.
+//!
+//! ```text
+//! mac-miner [--pool 127.0.0.1:3333] [--worker mac]
+//! ```
+//!
+//! Connects to a pool, subscribes, and hashes whatever it is sent. It knows
+//! nothing about blocks, transactions, or the node — only how to turn a job
+//! into headers and report the ones that meet the target.
+//!
+//! That ignorance is the point. Everything this program does, an ASIC also
+//! does, and it speaks the same protocol on the same port. Replacing it with a
+//! Bitaxe means pointing that device at the pool and stopping this process.
+
+mod connection;
+mod work;
+mod worker;
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use btc_primitives::{Target, hex};
+use serde_json::{Value, json};
+use stratum::{Incoming, Job, Request, method};
+
+use work::{Work, WorkState};
+
+/// How long to wait for the pool to answer the handshake.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("error: {error}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let (pool_address, worker_name) = parse_args()?;
+
+    println!("connecting to {pool_address}");
+    let connection = connection::connect(&pool_address)?;
+
+    // --- mining.subscribe ---------------------------------------------------
+    //
+    // The reply carries our extranonce1 and the width of the extranonce2 we are
+    // expected to supply. Without both, no coinbase we build would be the one
+    // the pool reconstructs.
+    connection.outbound.send(serde_json::to_string(&Request::call(
+        1,
+        method::SUBSCRIBE,
+        json!(["mac-miner/0.1.0"]),
+    ))?)?;
+
+    let subscribe_reply = wait_for_response(&connection, 1)?;
+    let (extranonce1, extranonce2_size) = parse_subscription(&subscribe_reply)?;
+
+    println!(
+        "subscribed: extranonce1 {}, extranonce2 {} bytes",
+        hex::encode(&extranonce1),
+        extranonce2_size
+    );
+
+    // --- mining.authorize ---------------------------------------------------
+    connection.outbound.send(serde_json::to_string(&Request::call(
+        2,
+        method::AUTHORIZE,
+        json!([worker_name, "x"]),
+    ))?)?;
+
+    let authorized = wait_for_response(&connection, 2)?;
+    if authorized != json!(true) {
+        return Err(format!("the pool refused to authorize {worker_name:?}").into());
+    }
+    println!("authorized as {worker_name}\n");
+
+    // --- Run ----------------------------------------------------------------
+    let state = Arc::new(WorkState::new());
+
+    {
+        let state = Arc::clone(&state);
+        let outbound = connection.outbound.clone();
+        std::thread::spawn(move || worker::run(state, outbound, worker_name));
+    }
+
+    // The main thread becomes the network loop: everything the pool sends from
+    // here on is either new work or a verdict on a share.
+    for message in connection.incoming {
+        match message {
+            Incoming::Request(request) if request.method == method::NOTIFY => {
+                match Job::from_notify_params(&request.params) {
+                    Ok(job) => install(&state, job, &extranonce1, extranonce2_size),
+                    Err(error) => eprintln!("bad job from pool: {error}"),
+                }
+            }
+            Incoming::Request(request) if request.method == method::SET_DIFFICULTY => {
+                if let Some(difficulty) = request.params.get(0).and_then(Value::as_f64) {
+                    println!("pool set difficulty to {difficulty}");
+                }
+            }
+            Incoming::Request(_) => {}
+            Incoming::Response(response) => match response.error {
+                // The pool checks every share itself, so a rejection here means
+                // our reconstruction disagreed with the pool's — worth shouting
+                // about, because it means one of us has a bug.
+                Some(error) => eprintln!("share rejected: {error}"),
+                None => println!("share accepted"),
+            },
+        }
+    }
+
+    println!("the pool closed the connection");
+    Ok(())
+}
+
+/// Installs a new job, replacing whatever the miner was working on.
+fn install(state: &WorkState, job: Job, extranonce1: &[u8], extranonce2_size: usize) {
+    let Ok(target) = Target::from_compact(job.bits) else {
+        eprintln!("job {} has an undecodable target, ignoring", job.job_id);
+        return;
+    };
+
+    println!(
+        "job {} on {}{}",
+        job.job_id,
+        job.prev_hash,
+        if job.clean_jobs { " (clean)" } else { "" }
+    );
+
+    state.set(Work {
+        job,
+        extranonce1: extranonce1.to_vec(),
+        extranonce2_size,
+        target,
+    });
+}
+
+/// Reads until the response with `id` arrives, discarding notifications.
+///
+/// The pool may push `set_difficulty` or even a job before answering the
+/// handshake, so anything that is not the reply we are waiting for is skipped
+/// rather than treated as an error.
+fn wait_for_response(
+    connection: &connection::Connection,
+    id: u64,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let deadline = std::time::Instant::now() + HANDSHAKE_TIMEOUT;
+
+    loop {
+        let remaining = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .ok_or("the pool did not answer in time")?;
+
+        match connection.incoming.recv_timeout(remaining)? {
+            Incoming::Response(response) if response.id == Some(id) => {
+                if let Some(error) = response.error {
+                    return Err(format!("the pool returned an error: {error}").into());
+                }
+                return Ok(response.result);
+            }
+            _ => continue,
+        }
+    }
+}
+
+/// Pulls extranonce1 and extranonce2_size out of the subscribe reply.
+///
+/// The reply is `[[[notification, id], ...], extranonce1, extranonce2_size]`.
+/// Only the last two elements matter to us.
+fn parse_subscription(result: &Value) -> Result<(Vec<u8>, usize), Box<dyn std::error::Error>> {
+    let array = result.as_array().ok_or("subscribe reply is not an array")?;
+    if array.len() < 3 {
+        return Err(format!("subscribe reply has {} elements, expected 3", array.len()).into());
+    }
+
+    let extranonce1 = hex::decode(
+        array[1]
+            .as_str()
+            .ok_or("subscribe reply has a non-string extranonce1")?,
+    )?;
+
+    let extranonce2_size = array[2]
+        .as_u64()
+        .ok_or("subscribe reply has a non-numeric extranonce2_size")? as usize;
+
+    Ok((extranonce1, extranonce2_size))
+}
+
+fn parse_args() -> Result<(String, String), Box<dyn std::error::Error>> {
+    let mut pool = "127.0.0.1:3333".to_owned();
+    let mut worker = "mac".to_owned();
+
+    let mut args = std::env::args().skip(1);
+    while let Some(flag) = args.next() {
+        let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
+
+        match flag.as_str() {
+            "--pool" => pool = value()?,
+            "--worker" => worker = value()?,
+            "--help" | "-h" => {
+                println!("mac-miner [--pool ADDR] [--worker NAME]");
+                std::process::exit(0);
+            }
+            other => return Err(format!("unknown option {other:?}").into()),
+        }
+    }
+
+    Ok((pool, worker))
+}
