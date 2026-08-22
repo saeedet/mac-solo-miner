@@ -26,6 +26,8 @@ NETWORK="${2:-regtest}"
 DATADIR="${SOLO_DATADIR:-$HOME/.bitcoin-solo}"
 CONF="$REPO_ROOT/config/bitcoin.$NETWORK.conf"
 
+die() { echo "error: $*" >&2; exit 1; }
+
 # Prefer whatever is on PATH; fall back to the Homebrew location.
 BITCOIND="$(command -v bitcoind || echo /opt/homebrew/opt/bitcoin/bin/bitcoind)"
 BITCOIN_CLI="$(command -v bitcoin-cli || echo /opt/homebrew/opt/bitcoin/bin/bitcoin-cli)"
@@ -34,7 +36,18 @@ BITCOIN_CLI="$(command -v bitcoin-cli || echo /opt/homebrew/opt/bitcoin/bin/bitc
 # (regtest=1 etc.) automatically and we never pass -regtest by hand.
 ARGS=(-datadir="$DATADIR" -conf="$CONF")
 
-die() { echo "error: $*" >&2; exit 1; }
+# Block files can live somewhere other than the datadir — an external drive
+# holding an archival copy, for instance. `-blocksdir` names the PARENT of the
+# `blocks/` directory, so SOLO_BLOCKSDIR=/Volumes/Expansion finds
+# /Volumes/Expansion/blocks.
+#
+# Applied only to mainnet: regtest and testnet chains are small and belong on
+# fast internal storage, and pointing them at the same parent would scatter new
+# directories across the external drive.
+if [[ -n "${SOLO_BLOCKSDIR:-}" && "$NETWORK" == "mainnet" ]]; then
+  [[ -d "$SOLO_BLOCKSDIR/blocks" ]] || die "SOLO_BLOCKSDIR=$SOLO_BLOCKSDIR has no blocks/ subdirectory"
+  ARGS+=(-blocksdir="$SOLO_BLOCKSDIR")
+fi
 
 [[ -f "$CONF" ]] || die "no config for network '$NETWORK' (expected $CONF)"
 
@@ -46,14 +59,16 @@ case "$COMMAND" in
 
     # bitcoind forks immediately but the RPC server is not up until it has
     # loaded the block index, so poll until it answers before returning.
-    for _ in $(seq 1 60); do
+    # Loading a large chainstate takes minutes, not seconds, so this waits far
+    # longer than a regtest node would ever need.
+    for _ in $(seq 1 600); do
       if "$BITCOIN_CLI" "${ARGS[@]}" getblockchaininfo >/dev/null 2>&1; then
         echo "RPC is up."
         exec "$BITCOIN_CLI" "${ARGS[@]}" getblockchaininfo
       fi
       sleep 1
     done
-    die "bitcoind did not answer RPC within 60s — check $DATADIR/$NETWORK/debug.log"
+    die "bitcoind did not answer RPC within 600s — check the debug.log under $DATADIR"
     ;;
 
   stop)

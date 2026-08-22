@@ -24,6 +24,7 @@ btc-primitives = { path = "crates/btc-primitives" }
 bitcoind-rpc = { path = "crates/bitcoind-rpc" }
 mining = { path = "crates/mining" }
 stratum = { path = "crates/stratum" }
+blk-scan = { path = "crates/blk-scan" }
 
 # JSON only. Bitcoin Core's RPC speaks JSON-RPC 1.0, and hand-rolling a parser
 # for `getblocktemplate`'s deeply-nested optional fields would teach nothing

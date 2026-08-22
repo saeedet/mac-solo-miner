@@ -12,6 +12,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "blk-scan"
+version = "0.1.0"
+dependencies = [
+ "btc-primitives",
+]
+
+[[package]]
 name = "btc-primitives"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,21 @@
+[package]
+name = "blk-scan"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Reads Bitcoin Core block files and reports what chain they actually contain"
+
+[dependencies]
+btc-primitives.workspace = true
+
+[[bin]]
+name = "blk-scan"
+path = "src/main.rs"
+
+[[bin]]
+name = "blk-concat"
+path = "src/bin/concat.rs"
+
+[lints]
+workspace = true
