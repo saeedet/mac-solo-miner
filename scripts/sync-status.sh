@@ -34,9 +34,17 @@ DATADIR="${SOLO_DATADIR:-$HOME/.bitcoin-solo}"
 CONF="$REPO_ROOT/config/bitcoin.$NETWORK.conf"
 CLI="$(command -v bitcoin-cli || echo /opt/homebrew/opt/bitcoin/bin/bitcoin-cli)"
 
+# Only mainnet logs to the datadir root; every other network gets its own
+# subdirectory. Reading the wrong one silently reports another node's progress,
+# which is exactly as confusing as it sounds.
+case "$NETWORK" in
+  mainnet) LOG="$DATADIR/debug.log" ;;
+  *)       LOG="$DATADIR/$NETWORK/debug.log" ;;
+esac
+
 report() {
-  if ! pgrep -f "bitcoind.*$DATADIR" > /dev/null; then
-    echo "bitcoind is NOT running"
+  if ! pgrep -f "bitcoind.*bitcoin\.$NETWORK\.conf" > /dev/null; then
+    echo "no bitcoind running for $NETWORK"
     return 1
   fi
 
@@ -44,7 +52,7 @@ report() {
   if ! info="$("$CLI" -datadir="$DATADIR" -conf="$CONF" getblockchaininfo 2>/dev/null)"; then
     # Normal for a few minutes after start, while the block index loads.
     local files
-    files=$(grep -c 'Reindexing block file' "$DATADIR/debug.log" 2>/dev/null || true)
+    files=$(grep -c 'Reindexing block file' "$LOG" 2>/dev/null || true)
     echo "RPC not up yet (phase 1: ${files:-0} / 5324 block files indexed)"
     return 0
   fi
@@ -52,7 +60,7 @@ report() {
   local peers
   peers="$("$CLI" -datadir="$DATADIR" -conf="$CONF" getconnectioncount 2>/dev/null || echo '?')"
 
-  python3 - "$info" "$DATADIR/debug.log" "$peers" <<'PY'
+  python3 - "$info" "$LOG" "$peers" <<'PY'
 import datetime, json, re, sys
 
 info, log_path, peers = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3]
