@@ -56,6 +56,12 @@ pub struct BlockchainInfo {
     pub initial_block_download: bool,
     /// Whether the node is pruned.
     pub pruned: bool,
+    /// Timestamp of the tip block.
+    ///
+    /// Used to detect a node that believes it is synced but has stopped
+    /// hearing from the network — see `readiness` in the pool.
+    #[serde(default)]
+    pub time: u64,
 }
 
 impl RpcClient {
@@ -96,6 +102,15 @@ impl RpcClient {
     /// keys they control.
     pub fn get_new_address(&self) -> Result<String, RpcError> {
         self.call("getnewaddress", json!(["", "bech32"]))
+    }
+
+    /// How many peers the node is connected to.
+    ///
+    /// Zero is the clearest possible sign that a node's view of the chain is
+    /// frozen, and it is the one signal that cannot false-positive: a node with
+    /// no peers cannot learn about a new block by any means.
+    pub fn get_connection_count(&self) -> Result<u32, RpcError> {
+        self.call("getconnectioncount", json!([]))
     }
 
     /// Fetches a block header.

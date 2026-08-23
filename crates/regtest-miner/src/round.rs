@@ -105,7 +105,7 @@ pub fn mine(
 
     // --- 4. The search ------------------------------------------------------
     let target = template.target()?;
-    let result = search(&header, &target, 0..u32::MAX);
+    let result = search(&header, &target, 0..=u32::MAX);
 
     let Some(solution) = result.solution else {
         return Ok(Outcome::Exhausted {

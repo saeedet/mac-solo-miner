@@ -22,6 +22,7 @@
 
 mod job_builder;
 mod min_difficulty;
+mod readiness;
 mod session;
 mod state;
 mod validate;
@@ -50,6 +51,15 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// transactions that arrived in the meantime.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
+/// How long the node may fail to produce a template before we give up.
+///
+/// Carrying on regardless is the worst option: miners keep hashing the last
+/// job, which quietly becomes worthless the moment the tip moves, and the
+/// operator sees a healthy hashrate the whole time. Long enough to ride out a
+/// node restart or a blip, short enough that nobody grinds a dead job for an
+/// hour.
+const MAX_TEMPLATE_OUTAGE: Duration = Duration::from_secs(120);
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("error: {error}");
@@ -67,32 +77,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = Arc::new(RpcClient::from_datadir(&options.datadir, options.network)?);
 
+    // Every reason a node might be unfit to mine on lives in one place, so the
+    // check cannot drift between callers. Notably it is not enough to ask
+    // whether the node finished syncing: Core latches that answer to false and
+    // never revisits it, so a node that later loses every peer still claims to
+    // be caught up. See the `readiness` module.
     let info = client.get_blockchain_info()?;
-    if info.chain != options.network.as_str() {
-        return Err(format!(
-            "asked for {} but the node at {} is running {}",
-            options.network,
-            options.datadir.display(),
-            info.chain
-        )
-        .into());
-    }
-
-    // Mining on a node that has not caught up builds on the wrong tip, so any
-    // block found would be rejected. Refuse rather than waste the session.
-    if info.initial_block_download {
-        return Err(format!(
-            "the node is still syncing ({} of {} blocks) — \
-             mining now would build on a stale tip",
-            info.blocks, info.headers
-        )
-        .into());
-    }
+    let peers = client.get_connection_count()?;
+    readiness::check(options.network, &info, peers, unix_now())?;
 
     let payout_script = resolve_payout_script(&client, &options)?;
 
     println!("pool    : {} on {}", options.network, options.listen);
-    println!("node    : height {}", info.blocks);
+    println!("node    : height {} ({peers} peers)", info.blocks);
     println!("payout  : {}\n", hex::encode(&payout_script));
 
     let (state, wakeups) = PoolState::new();
@@ -140,10 +137,13 @@ fn poll_templates(
     let mut last_tip = None;
     let mut last_bits: Option<u32> = None;
     let mut last_built = std::time::Instant::now();
+    let mut last_success = std::time::Instant::now();
+    let mut announced_ready = false;
 
     loop {
         match client.get_block_template() {
             Ok(template) => {
+                last_success = std::time::Instant::now();
                 let tip = template.previous_block_hash.clone();
 
                 // A changed tip means everything in flight is now worthless, so
@@ -237,6 +237,14 @@ fn poll_templates(
                                 state.broadcast(&line);
                             }
 
+                            // A readiness signal, so a supervising script can
+                            // wait for real work rather than guessing from a
+                            // sleep and a liveness check.
+                            if !announced_ready {
+                                announced_ready = true;
+                                println!("POOL READY — first job built, serving miners");
+                            }
+
                             last_tip = Some(tip);
                             last_bits = bits;
                             last_built = std::time::Instant::now();
@@ -245,7 +253,19 @@ fn poll_templates(
                     }
                 }
             }
-            Err(error) => eprintln!("cannot fetch a template: {error}"),
+            Err(error) => {
+                eprintln!("cannot fetch a template: {error}");
+
+                if last_success.elapsed() >= MAX_TEMPLATE_OUTAGE {
+                    eprintln!(
+                        "\nFATAL: no block template for {}s. Miners would be hashing a job \
+                         that is probably already dead, so the pool is stopping rather than \
+                         letting that continue silently.",
+                        last_success.elapsed().as_secs(),
+                    );
+                    std::process::exit(1);
+                }
+            }
         }
 
         // Sleep, but wake early if a session tells us the tip moved. Draining

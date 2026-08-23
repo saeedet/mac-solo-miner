@@ -54,7 +54,16 @@ pub struct Solution {
 /// Tries every nonce in `range`, stopping early if one solves the block.
 ///
 /// `header`'s nonce field is ignored; the range supplies it.
-pub fn search(header: &BlockHeader, target: &Target, range: std::ops::Range<u32>) -> SearchResult {
+///
+/// The range is **inclusive** so that the whole nonce space can be expressed.
+/// An exclusive `0..u32::MAX` silently omits `0xFFFFFFFF`, and there is no
+/// exclusive range over `u32` that includes it — the end would have to be
+/// 2^32, which does not fit.
+pub fn search(
+    header: &BlockHeader,
+    target: &Target,
+    range: std::ops::RangeInclusive<u32>,
+) -> SearchResult {
     // Compress the unchanging first block once, here, instead of per nonce.
     let hasher = HeaderHasher::new(&header.serialize());
 
@@ -115,7 +124,7 @@ mod tests {
 
         // Start just below the known answer so the test stays fast.
         let known = 2_083_236_893;
-        let result = search(&header, &target, known - 500..known + 1);
+        let result = search(&header, &target, known - 500..=known);
 
         let solution = result.solution.expect("the genesis nonce is in range");
         assert_eq!(solution.nonce, known);
@@ -139,7 +148,7 @@ mod tests {
         };
         let target = header.target().expect("valid bits");
 
-        let result = search(&header, &target, 0..1000);
+        let result = search(&header, &target, 0..=999);
 
         assert!(result.solution.is_none());
         assert_eq!(result.hashes, 1000);

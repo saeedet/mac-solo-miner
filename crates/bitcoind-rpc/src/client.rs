@@ -29,7 +29,8 @@ use serde_json::{Value, json};
 
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -42,7 +43,11 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// A JSON-RPC client for a local Bitcoin Core node.
 pub struct RpcClient {
     http: HttpClient,
-    credentials: Credentials,
+    /// Behind a lock because the cookie is re-read when bitcoind rotates it —
+    /// see [`RpcClient::call`].
+    credentials: RwLock<Credentials>,
+    /// Where to re-read the cookie from.
+    cookie_path: PathBuf,
     /// JSON-RPC request ids. Only needs to be unique per in-flight request; we
     /// make it monotonic so it is also useful when reading a packet capture.
     next_id: AtomicU64,
@@ -62,12 +67,32 @@ impl RpcClient {
 
         Ok(Self {
             http: HttpClient::new(address, DEFAULT_TIMEOUT),
-            credentials,
+            credentials: RwLock::new(credentials),
+            cookie_path: network.cookie_path(datadir),
             next_id: AtomicU64::new(1),
         })
     }
 
+    /// Re-reads the cookie file.
+    ///
+    /// bitcoind generates a fresh cookie on every startup, so credentials read
+    /// once at construction go stale the moment the node is restarted. Without
+    /// this, a restart turns the pool into a zombie: alive, connected, and
+    /// permanently unauthorised.
+    fn reload_credentials(&self) -> Result<(), RpcError> {
+        let fresh = Credentials::from_cookie_file(&self.cookie_path)?;
+        *self
+            .credentials
+            .write()
+            .expect("credentials lock poisoned") = fresh;
+        Ok(())
+    }
+
     /// Calls `method` with positional `params`, deserialising the result.
+    ///
+    /// A 401 triggers one cookie reload and one retry, because the overwhelmingly
+    /// likely cause is that bitcoind restarted and rotated the cookie. Only a
+    /// second consecutive 401 is reported as an error.
     pub fn call<T: DeserializeOwned>(&self, method: &str, params: Value) -> Result<T, RpcError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
 
@@ -76,14 +101,20 @@ impl RpcClient {
             "id": id.to_string(),
             "method": method,
             "params": params,
-        });
+        })
+        .to_string();
 
-        let response = self
-            .http
-            .post_json(&self.credentials.authorization_header(), &request.to_string())?;
+        let mut response = self.post(&request)?;
 
-        // 401 never carries a JSON body worth reading, and its cause is always
-        // the same, so it is worth naming specifically.
+        if response.status == 401 {
+            // Reloading can itself fail — the node may be gone entirely, in
+            // which case the cookie file is stale or absent. Report that rather
+            // than the 401, since it is the more useful diagnosis.
+            self.reload_credentials()?;
+            response = self.post(&request)?;
+        }
+
+        // A second 401 means the credentials on disk genuinely do not work.
         if response.status == 401 {
             return Err(RpcError::Unauthorized);
         }
@@ -124,6 +155,19 @@ impl RpcClient {
     }
 }
 
+impl RpcClient {
+    /// Sends one request with the credentials currently held.
+    fn post(&self, request: &str) -> Result<crate::http::Response, RpcError> {
+        let header = self
+            .credentials
+            .read()
+            .expect("credentials lock poisoned")
+            .authorization_header();
+
+        Ok(self.http.post_json(&header, request)?)
+    }
+}
+
 /// Trims a body for inclusion in an error message.
 fn truncate(body: &str) -> String {
     const LIMIT: usize = 200;
@@ -140,8 +184,9 @@ pub enum RpcError {
     Auth(AuthError),
     /// The HTTP exchange failed.
     Http(HttpError),
-    /// bitcoind rejected our credentials. Almost always a stale cookie: the
-    /// node was restarted and wrote a new one after we read the old.
+    /// bitcoind rejected our credentials twice, with a cookie reload in
+    /// between. The cookie on disk genuinely does not work — a different node,
+    /// a wrong datadir, or `rpcauth` configured instead of cookie auth.
     Unauthorized,
     /// bitcoind returned a JSON-RPC error.
     Rpc {
@@ -196,8 +241,8 @@ impl fmt::Display for RpcError {
             Self::Http(source) => write!(f, "{source}"),
             Self::Unauthorized => write!(
                 f,
-                "bitcoind rejected our credentials \
-                 (the cookie is regenerated on restart — reconnect to pick up the new one)"
+                "bitcoind rejected our credentials even after re-reading the cookie \
+                 — check the datadir is right and that the node uses cookie auth"
             ),
             Self::Rpc { method, code, message } => {
                 write!(f, "{method} failed: {message} (code {code})")

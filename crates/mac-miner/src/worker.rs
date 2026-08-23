@@ -104,8 +104,8 @@ fn mine(shared: &Shared) {
 
         let mut start = 0u32;
         while shared.state.is_current(generation) {
-            let end = start.saturating_add(BATCH);
-            let result = mining::search(&header, &work.target, start..end);
+            let end = batch_end(start);
+            let result = mining::search(&header, &work.target, start..=end);
 
             shared.stats.record(result.hashes, result.best);
 
@@ -126,7 +126,7 @@ fn mine(shared: &Shared) {
             if end == u32::MAX {
                 break; // nonce space exhausted; claim a new extranonce
             }
-            start = end;
+            start = end + 1;
         }
     }
 }
@@ -179,6 +179,16 @@ fn wait_for_new_work(state: &WorkState, generation: u64) {
     }
 }
 
+/// The inclusive end of the batch beginning at `start`.
+///
+/// Saturating, so the final batch ends exactly at `u32::MAX` and the whole
+/// space is covered. The previous version used an exclusive end and stopped at
+/// `u32::MAX`, which left nonce `0xFFFFFFFF` untried on every extranonce — one
+/// hash in 2^32, so harmless in practice, but wrong.
+fn batch_end(start: u32) -> u32 {
+    start.saturating_add(BATCH - 1)
+}
+
 /// Encodes the extranonce counter into exactly `size` bytes, big-endian.
 ///
 /// Truncates from the top when the counter outgrows the width, which simply
@@ -197,6 +207,49 @@ fn encode_extranonce2(counter: u64, size: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Walking the batches must cover every nonce exactly once — and this
+    /// pins the off-by-one that used to lose the last one.
+    ///
+    /// The previous loop used an exclusive `start..end` whose end saturated at
+    /// `u32::MAX`, so `0xFFFFFFFF` was never tried. Both halves are computed
+    /// here so the difference is visible rather than asserted from memory.
+    #[test]
+    fn batching_covers_the_entire_nonce_space() {
+        // What the old exclusive loop covered.
+        let old = {
+            let mut start = 0u32;
+            let mut covered = 0u64;
+            loop {
+                let end = start.saturating_add(BATCH);
+                covered += u64::from(end - start);
+                if end == u32::MAX {
+                    break;
+                }
+                start = end;
+            }
+            covered
+        };
+
+        // What the inclusive one covers.
+        let new = {
+            let mut start = 0u32;
+            let mut covered = 0u64;
+            loop {
+                let end = batch_end(start);
+                covered += u64::from(end - start) + 1;
+                if end == u32::MAX {
+                    break;
+                }
+                start = end + 1;
+            }
+            covered
+        };
+
+        assert_eq!(new, 1u64 << 32, "every nonce, exactly once");
+        assert_eq!(old, (1u64 << 32) - 1, "the old loop fell one short");
+        assert_eq!(new - old, 1, "and the one it missed was 0xFFFFFFFF");
+    }
 
     #[test]
     fn extranonce2_fills_the_assigned_width() {

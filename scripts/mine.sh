@@ -49,25 +49,28 @@ if [[ -z "$ADDRESS" && -f "$ADDRESS_FILE" ]]; then
 fi
 [[ -n "$ADDRESS" ]] || die "no payout address. Pass --address, set SOLO_PAYOUT_ADDRESS, or write one to $ADDRESS_FILE"
 
+# --- Build, so the binaries match the source -----------------------------
+#
+# The whole point of this project is editing the code, and running a stale
+# binary after a change is a confusing way to lose an hour. cargo is a no-op
+# when nothing changed, so this costs nothing on a normal start.
+export PATH="/opt/homebrew/opt/rustup/bin:$PATH"
+command -v cargo > /dev/null || die "cargo not found. Install Rust, or build manually and edit this script."
+echo "building..."
+cargo build --release -q -p solo-pool -p mac-miner || die "build failed"
+
 # --- Refuse to mine on a node that is not ready --------------------------
 #
 # Mining on a stale tip is not merely wasteful, it is certain to be wasted:
 # the block would build on a parent the network has already moved past, and
 # every hash spent on it is spent on something that cannot be accepted.
-echo "checking the $NETWORK node..."
-STATUS="$(./scripts/node.sh cli "$NETWORK" getblockchaininfo 2>&1)" \
+# The pool owns this decision — it checks the chain, the sync state, the peer
+# count and the tip's age in one place (see crates/solo-pool/src/readiness.rs).
+# Repeating a weaker version here would only give two answers that can drift
+# apart. This just fails fast, with a friendlier message, when there is plainly
+# no node at all.
+./scripts/node.sh cli "$NETWORK" getblockcount > /dev/null 2>&1 \
   || die "no $NETWORK node responding. Start one with: ./scripts/node.sh start $NETWORK"
-
-python3 - "$STATUS" <<'PY' || exit 1
-import json, sys
-info = json.loads(sys.argv[1])
-behind = info["headers"] - info["blocks"]
-if info["initialblockdownload"] or behind > 0:
-    print(f"error: node is still syncing — {info['blocks']:,} of {info['headers']:,} "
-          f"({behind:,} behind). Mining now would build on a stale tip.", file=sys.stderr)
-    sys.exit(1)
-print(f"node ready: {info['chain']} at height {info['blocks']:,}")
-PY
 
 # --- Clear the way -------------------------------------------------------
 #
@@ -110,15 +113,35 @@ trap cleanup EXIT INT TERM
 ./target/release/solo-pool --network "$NETWORK" --address "$ADDRESS" > "$POOL_LOG" 2>&1 &
 POOL_PID=$!
 
-# Give the pool time to validate the address and bind, then make sure it is
-# actually alive before pointing a miner at it.
-sleep 3
-kill -0 "$POOL_PID" 2>/dev/null || { echo "pool failed to start:"; cat "$POOL_LOG"; exit 1; }
-sed -n '1,6p' "$POOL_LOG"
+# Wait for the pool to announce that it has *built a job*, not merely that its
+# process exists. A pool whose node is unreachable can bind the port and look
+# perfectly healthy while never producing work, and a miner pointed at it would
+# hash nothing while reporting a fine hashrate.
+echo "waiting for the pool to get work..."
+for _ in $(seq 1 60); do
+  grep -q "POOL READY" "$POOL_LOG" 2>/dev/null && READY=1 && break
+  kill -0 "$POOL_PID" 2>/dev/null || break
+  sleep 1
+done
+
+if [[ -z "${READY:-}" ]]; then
+  echo
+  echo "the pool never produced a job. Its output:"
+  echo "---"
+  cat "$POOL_LOG"
+  exit 1
+fi
+
+sed -n '1,8p' "$POOL_LOG"
 
 # Blocks found are announced by the pool, so surface its output alongside the
 # miner's rather than burying it in a file.
-tail -f "$POOL_LOG" | grep --line-buffered -E "BLOCK FOUND|accepted|REJECTED|new tip" &
+# Anything that is a block, a rejection, or a failure. The earlier filter listed
+# only good news, which meant "cannot fetch a template" and "cannot build a job"
+# — the latter being how a witness-commitment mismatch surfaces — never reached
+# the terminal.
+tail -f "$POOL_LOG" \
+  | grep --line-buffered -iE "BLOCK FOUND|accepted|REJECTED|not adopted|new tip|FATAL|error|cannot|warn|disagree" &
 
 MINER_ARGS=(--pool 127.0.0.1:3333 --worker "mac.$NETWORK")
 [[ -n "$THREADS" ]] && MINER_ARGS+=(--threads "$THREADS")
