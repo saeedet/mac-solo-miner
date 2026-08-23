@@ -95,7 +95,12 @@ POOL_LOG="$(mktemp -t solo-pool)"
 # Everything started here must die with the script. Note the miner below is NOT
 # exec'd: exec would replace this shell, taking the trap with it, and the pool
 # would outlive Ctrl-C and hold the port against the next run.
+# Set by cleanup so the exit path below can tell a shutdown we asked for from
+# one that happened to us.
+STOPPING=false
+
 cleanup() {
+  STOPPING=true
   echo
   echo "stopping..."
 
@@ -108,7 +113,11 @@ cleanup() {
 
   echo "pool log kept at $POOL_LOG"
 }
-trap cleanup EXIT INT TERM
+# A signal handler that does not exit would let bash resume after the
+# interrupted command, so Ctrl-C is made explicit. 130 is the conventional
+# status for SIGINT.
+trap 'cleanup; exit 130' INT TERM
+trap cleanup EXIT
 
 ./target/release/solo-pool --network "$NETWORK" --address "$ADDRESS" > "$POOL_LOG" 2>&1 &
 POOL_PID=$!
@@ -146,5 +155,29 @@ tail -f "$POOL_LOG" \
 MINER_ARGS=(--pool 127.0.0.1:3333 --worker "mac.$NETWORK")
 [[ -n "$THREADS" ]] && MINER_ARGS+=(--threads "$THREADS")
 
-# Foreground, deliberately not exec'd — see cleanup() above.
-./target/release/mac-miner "${MINER_ARGS[@]}"
+# Backgrounded and waited on, deliberately — and deliberately not exec'd.
+#
+# `exec` would replace this shell and take the traps with it. But a plain
+# foreground child is not much better: bash defers signal handling until the
+# running command finishes, so a SIGTERM aimed at this script alone would sit
+# pending while the miner ran on, and nothing would ever stop. `wait` is
+# interruptible, so the trap fires immediately either way.
+./target/release/mac-miner "${MINER_ARGS[@]}" &
+MINER_PID=$!
+wait "$MINER_PID"
+MINER_STATUS=$?
+
+# The miner exits 0 when the pool closes the connection — which is what a clean
+# Ctrl-C looks like, and also what a pool that died of its own accord looks
+# like. Reporting both as success would let a supervisor read a fatal mining
+# failure as a completed run, so they are told apart here, where the reason is
+# known.
+if [[ "$STOPPING" == false ]] && ! kill -0 "$POOL_PID" 2>/dev/null; then
+  echo
+  echo "the pool exited on its own — this was not a clean shutdown."
+  echo "--- its last output ---"
+  tail -8 "$POOL_LOG"
+  exit 1
+fi
+
+exit "$MINER_STATUS"

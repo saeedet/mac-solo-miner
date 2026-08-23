@@ -60,6 +60,12 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 /// hour.
 const MAX_TEMPLATE_OUTAGE: Duration = Duration::from_secs(120);
 
+/// How often to re-examine whether the node is still worth mining on.
+///
+/// Cheap — two RPC calls — and the condition it looks for takes hours to
+/// develop, so there is nothing to gain from checking more often.
+const READINESS_INTERVAL: Duration = Duration::from_secs(60);
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("error: {error}");
@@ -95,18 +101,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (state, wakeups) = PoolState::new();
     let state = Arc::new(state);
 
+    // Bind before starting the poller. The poller announces readiness once it
+    // has a job, and a supervising script may launch a miner the moment it sees
+    // that — so the socket has to exist first, or the miner races the bind and
+    // gets connection-refused.
+    let listener = TcpListener::bind(options.listen)?;
+    println!("waiting for miners on {}", options.listen);
+
     // The poller owns template watching; the main thread owns accepting.
     {
         let state = Arc::clone(&state);
         let client = Arc::clone(&client);
-        let exploit = options.network == Network::Testnet4;
+        let network = options.network;
         std::thread::spawn(move || {
-            poll_templates(&state, &client, &payout_script, &wakeups, exploit)
+            poll_templates(&state, &client, &payout_script, &wakeups, network)
         });
     }
-
-    let listener = TcpListener::bind(options.listen)?;
-    println!("waiting for miners on {}", options.listen);
 
     for stream in listener.incoming() {
         match stream {
@@ -132,18 +142,24 @@ fn poll_templates(
     client: &RpcClient,
     payout_script: &[u8],
     wakeups: &std::sync::mpsc::Receiver<()>,
-    exploit_min_difficulty: bool,
+    network: Network,
 ) {
+    let exploit_min_difficulty = network == Network::Testnet4;
     let mut last_tip = None;
     let mut last_bits: Option<u32> = None;
     let mut last_built = std::time::Instant::now();
-    let mut last_success = std::time::Instant::now();
+    // Health is measured by the last job we actually *installed*, not the last
+    // RPC that answered. A node can serve templates perfectly while every one
+    // of them fails to become a job — a witness-commitment disagreement, say —
+    // and in that state the previously installed job is stale the moment the
+    // tip moves. Timing from the RPC would call that healthy.
+    let mut last_job_installed = std::time::Instant::now();
+    let mut last_readiness_check = std::time::Instant::now();
     let mut announced_ready = false;
 
     loop {
         match client.get_block_template() {
             Ok(template) => {
-                last_success = std::time::Instant::now();
                 let tip = template.previous_block_hash.clone();
 
                 // A changed tip means everything in flight is now worthless, so
@@ -248,23 +264,46 @@ fn poll_templates(
                             last_tip = Some(tip);
                             last_bits = bits;
                             last_built = std::time::Instant::now();
+                            last_job_installed = last_built;
                         }
                         Err(error) => eprintln!("cannot build a job: {error}"),
                     }
                 }
             }
-            Err(error) => {
-                eprintln!("cannot fetch a template: {error}");
+            Err(error) => eprintln!("cannot fetch a template: {error}"),
+        }
 
-                if last_success.elapsed() >= MAX_TEMPLATE_OUTAGE {
-                    eprintln!(
-                        "\nFATAL: no block template for {}s. Miners would be hashing a job \
-                         that is probably already dead, so the pool is stopping rather than \
-                         letting that continue silently.",
-                        last_success.elapsed().as_secs(),
-                    );
-                    std::process::exit(1);
+        // Checked here rather than in the error arm above, so a run of *build*
+        // failures counts as an outage too. Either way the miners are grinding
+        // work that nothing has refreshed.
+        if last_job_installed.elapsed() >= MAX_TEMPLATE_OUTAGE {
+            eprintln!(
+                "\nFATAL: no job installed for {}s. Miners would be hashing work that is \
+                 probably already dead, so the pool is stopping rather than letting that \
+                 continue silently.",
+                last_job_installed.elapsed().as_secs(),
+            );
+            std::process::exit(1);
+        }
+
+        // Readiness is not a one-time property. Core refuses getblocktemplate
+        // outright when a node has no peers, so that case is already caught
+        // above — but a node whose peers are all connected and useless will
+        // happily serve templates for a tip that stopped moving hours ago.
+        // Only re-checking the tip's age catches that.
+        if last_readiness_check.elapsed() >= READINESS_INTERVAL {
+            last_readiness_check = std::time::Instant::now();
+
+            match (client.get_blockchain_info(), client.get_connection_count()) {
+                (Ok(info), Ok(peers)) => {
+                    if let Err(reason) = readiness::check(network, &info, peers, unix_now()) {
+                        eprintln!("\nFATAL: the node is no longer fit to mine on — {reason}");
+                        std::process::exit(1);
+                    }
                 }
+                // A failure to ask is not a failure of the node; the outage
+                // timer above is what handles an unreachable one.
+                _ => eprintln!("cannot re-check node readiness"),
             }
         }
 
