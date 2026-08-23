@@ -37,6 +37,7 @@ version = "0.1.0"
 dependencies = [
  "btc-primitives",
  "mining",
+ "serde",
  "serde_json",
  "stratum",
 ]

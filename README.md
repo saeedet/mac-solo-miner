@@ -74,8 +74,8 @@ without the pool changing at all.
 - [x] **3** — Monolithic regtest miner — *bitcoind accepts a block we mined*
 - [x] **4** — Split into `solo-pool` + `mac-miner` over Stratum V1
 - [x] **5** — Optimise: midstate, ARM crypto extensions, multithreading
-- [ ] **6** — testnet4 — *find a real block on a public network*
-- [ ] **7** — Mainnet pruned node, "lottery mode"
+- [x] **6** — testnet4 — *built a valid block a real node accepted as its tip*
+- [x] **7** — Mainnet pruned node, "lottery mode"
 
 ## Quickstart
 
@@ -119,6 +119,33 @@ it.
 The pool serves Stratum V1, so `mac-miner` is replaceable: point an ASIC at
 port 3333 instead and nothing on the pool side changes. That is the whole reason
 the split exists.
+
+### Mine on mainnet
+
+```bash
+./scripts/mine.sh mainnet --threads half
+```
+
+One command: it refuses to start unless the node is synced, validates the
+payout address against the network, starts the pool and the miner, and stops
+both on Ctrl-C. The payout address is read from
+`~/.solo-mac-miner/payout.mainnet` — outside the repo, so it never reaches git.
+
+`--threads half` uses four of eight cores for about 70% of full hashrate and
+much less heat. The default leaves two cores free; `--threads max` uses all of
+them.
+
+Stopping costs nothing. Mining is memoryless, so an hour today and an hour next
+month are worth exactly what two hours now would be — which is why
+`~/.solo-mac-miner/lifetime.json` accumulates across sessions:
+
+```
+  67.84 MH/s (avg  67.54)   session    2.70G   best 31 bits   0000000117804...
+          lifetime    2.70G   best ever 31 bits   ~1 in 1.999e14 of a block
+```
+
+The best-ever hash is worth nothing in consensus terms — a near miss is a miss.
+It is tracked because it is the only feedback solo mining ever gives.
 
 ### Measure the hasher
 

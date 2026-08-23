@@ -10,6 +10,7 @@ description = "A Stratum V1 mining client that hashes on the CPU"
 btc-primitives.workspace = true
 stratum.workspace = true
 mining.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 [lints]

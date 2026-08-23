@@ -13,6 +13,7 @@
 //! Bitaxe means pointing that device at the pool and stopping this process.
 
 mod connection;
+mod lifetime;
 mod stats;
 mod work;
 mod worker;
@@ -24,6 +25,7 @@ use btc_primitives::{Target, hex};
 use serde_json::{Value, json};
 use stratum::{Incoming, Job, Request, method};
 
+use lifetime::Lifetime;
 use stats::Stats;
 use work::{Work, WorkState};
 
@@ -101,7 +103,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         let stats = Arc::clone(&stats);
-        std::thread::spawn(move || report_forever(&stats));
+        let state = Arc::clone(&state);
+        std::thread::spawn(move || report_forever(&stats, &state));
     }
 
     // The main thread becomes the network loop: everything the pool sends from
@@ -134,28 +137,81 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Prints a status line every [`REPORT_INTERVAL`].
+/// Formats a hash count with an SI-style suffix.
 ///
-/// Runs on its own thread so the mining threads never spend time on formatting,
-/// and so the interval stays honest regardless of how long a batch takes.
-fn report_forever(stats: &Stats) {
-    let mut previous_hashes = 0u64;
+/// These numbers reach the quadrillions over a few sessions, and raw digits at
+/// that scale convey nothing.
+fn si(count: u64) -> String {
+    const UNITS: [(f64, &str); 5] = [
+        (1e18, "E"),
+        (1e15, "P"),
+        (1e12, "T"),
+        (1e9, "G"),
+        (1e6, "M"),
+    ];
+    let value = count as f64;
+
+    for (scale, suffix) in UNITS {
+        if value >= scale {
+            return format!("{:.2}{suffix}", value / scale);
+        }
+    }
+    format!("{count}")
+}
+
+/// Prints a status line every [`REPORT_INTERVAL`], and keeps the lifetime
+/// totals up to date.
+///
+/// Runs on its own thread so the mining threads never spend time on formatting
+/// or disk I/O, and so the interval stays honest regardless of batch length.
+fn report_forever(stats: &Stats, state: &WorkState) {
+    let mut lifetime = Lifetime::load(&lifetime::default_path());
+    let mut folded_in = 0u64;
+
+    println!(
+        "lifetime so far: {} hashes over {} sessions, best {} zero bits\n",
+        si(lifetime.total_hashes),
+        lifetime.sessions,
+        lifetime.best_zero_bits,
+    );
 
     loop {
         std::thread::sleep(REPORT_INTERVAL);
 
         let total = stats.total_hashes();
-        let recent = total - previous_hashes;
-        previous_hashes = total;
+        let recent = total - folded_in;
+        folded_in = total;
 
         let (best, zero_bits) = stats.best();
 
+        lifetime.record(recent, best, zero_bits);
+        if let Err(error) = lifetime.save() {
+            eprintln!("warning: cannot save lifetime totals: {error}");
+        }
+
+        // The difficulty currently being mined, for the odds figure below.
+        let difficulty = state
+            .snapshot()
+            .map_or(0.0, |(work, _)| btc_primitives::Target::difficulty(work.job.bits));
+
         println!(
-            "{:>7.2} MH/s   avg {:>7.2} MH/s   total {:>8.1}M   best {zero_bits} zero bits  {best}",
+            "{:>7.2} MH/s (avg {:>6.2})   session {:>8}   best {zero_bits} bits   {best}",
             recent as f64 / REPORT_INTERVAL.as_secs_f64() / 1e6,
             stats.average_hashrate() / 1e6,
-            total as f64 / 1e6,
+            si(total),
         );
+
+        // Restated every tick because it is the only honest measure of
+        // progress: the odds are linear in total work and carry no memory of
+        // how that work was spread over time.
+        if difficulty > 0.0 {
+            println!(
+                "          lifetime {:>8}   best ever {} bits   ~1 in {:.3e} of a block",
+                si(lifetime.total_hashes),
+                lifetime.best_zero_bits,
+                lifetime.odds_denominator(difficulty),
+            );
+        }
     }
 }
 
