@@ -69,13 +69,40 @@ if info["initialblockdownload"] or behind > 0:
 print(f"node ready: {info['chain']} at height {info['blocks']:,}")
 PY
 
+# --- Clear the way -------------------------------------------------------
+#
+# A pool left over from a previous run holds port 3333 and the next start fails
+# with a bare "Address already in use". Since anything listening there under our
+# own binary is definitionally ours and stale, clear it; anything else is
+# somebody's business and we stop instead.
+STALE="$(lsof -nP -iTCP:3333 -sTCP:LISTEN -t 2>/dev/null || true)"
+if [[ -n "$STALE" ]]; then
+  if ps -p "$STALE" -o command= | grep -q solo-pool; then
+    echo "clearing a stale solo-pool (pid $STALE) still holding port 3333"
+    kill "$STALE" 2>/dev/null
+    sleep 1
+  else
+    die "port 3333 is in use by pid $STALE ($(ps -p "$STALE" -o comm=)), which is not ours"
+  fi
+fi
+
 # --- Run -----------------------------------------------------------------
 POOL_LOG="$(mktemp -t solo-pool)"
+
+# Everything started here must die with the script. Note the miner below is NOT
+# exec'd: exec would replace this shell, taking the trap with it, and the pool
+# would outlive Ctrl-C and hold the port against the next run.
 cleanup() {
   echo
   echo "stopping..."
-  [[ -n "${POOL_PID:-}" ]] && kill "$POOL_PID" 2>/dev/null
-  wait "${POOL_PID:-}" 2>/dev/null
+
+  # Kill every child rather than named PIDs. In `a | b &`, `$!` is the PID of
+  # `b` only, so killing it leaves `a` alive — and a surviving `tail -f` holds
+  # this script's stdout open, so whatever is reading it never sees EOF and
+  # hangs forever. Killing by parent gets the whole pipeline.
+  pkill -P $$ 2>/dev/null
+  wait 2>/dev/null
+
   echo "pool log kept at $POOL_LOG"
 }
 trap cleanup EXIT INT TERM
@@ -96,4 +123,5 @@ tail -f "$POOL_LOG" | grep --line-buffered -E "BLOCK FOUND|accepted|REJECTED|new
 MINER_ARGS=(--pool 127.0.0.1:3333 --worker "mac.$NETWORK")
 [[ -n "$THREADS" ]] && MINER_ARGS+=(--threads "$THREADS")
 
-exec ./target/release/mac-miner "${MINER_ARGS[@]}"
+# Foreground, deliberately not exec'd — see cleanup() above.
+./target/release/mac-miner "${MINER_ARGS[@]}"
