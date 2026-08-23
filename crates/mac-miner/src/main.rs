@@ -84,7 +84,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(WorkState::new());
     let stats = Arc::new(Stats::new());
 
-    println!("hashing on {} threads\n", options.threads);
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    println!(
+        "hashing on {} of {cores} cores{}\n",
+        options.threads,
+        if options.threads >= cores { " (full tilt — expect heat)" } else { "" },
+    );
 
     worker::spawn(
         Arc::clone(&state),
@@ -235,12 +240,15 @@ struct Options {
 }
 
 fn parse_args() -> Result<Options, Box<dyn std::error::Error>> {
-    // One thread per logical core by default. On an M3 that is four performance
-    // cores and four efficiency ones; the efficiency cores hash more slowly but
-    // still add throughput, and the scheduler places threads better than a
-    // fixed guess would.
-    let default_threads = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZeroUsize::get);
+    // Leave two cores free by default.
+    //
+    // Using every core costs roughly a third more heat and fan noise for the
+    // last ~20% of hashrate, and makes the machine unpleasant to use. Since
+    // the expected time to a mainnet block is measured in geological units,
+    // trading a fifth of the hashrate for a usable laptop is not a meaningful
+    // sacrifice. `--threads max` overrides this.
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let default_threads = cores.saturating_sub(2).max(1);
 
     let mut options = Options {
         pool: "127.0.0.1:3333".to_owned(),
@@ -256,13 +264,28 @@ fn parse_args() -> Result<Options, Box<dyn std::error::Error>> {
             "--pool" => options.pool = value()?,
             "--worker" => options.worker = value()?,
             "--threads" => {
-                options.threads = value()?.parse()?;
+                let requested = value()?;
+                options.threads = match requested.as_str() {
+                    // On an Apple Silicon chip with an even split of
+                    // performance and efficiency cores, "half" lands roughly on
+                    // the performance cores alone — about 70% of full hashrate
+                    // for appreciably less heat.
+                    "half" => (cores / 2).max(1),
+                    "max" => cores,
+                    number => number.parse()?,
+                };
                 if options.threads == 0 {
                     return Err("--threads must be at least 1".into());
                 }
             }
             "--help" | "-h" => {
-                println!("mac-miner [--pool ADDR] [--worker NAME] [--threads N]");
+                println!(
+                    "mac-miner [--pool ADDR] [--worker NAME] [--threads N|half|max]\n\
+                     \n\
+                     --threads defaults to {default_threads} of {cores} cores, leaving two free so\n\
+                     the machine stays usable. `half` is {} and `max` is {cores}.",
+                    (cores / 2).max(1),
+                );
                 std::process::exit(0);
             }
             other => return Err(format!("unknown option {other:?}").into()),

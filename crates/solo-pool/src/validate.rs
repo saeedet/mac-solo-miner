@@ -16,6 +16,18 @@ use stratum::Share;
 
 use crate::job_builder::ActiveJob;
 
+/// Longest we will sit on a solved block waiting for its timestamp to become
+/// legal. Bounded so a mistake in the window arithmetic stalls one share rather
+/// than the whole pool.
+const MAX_SUBMISSION_HOLD: i64 = 30 * 60;
+
+/// Seconds since the Unix epoch.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
 /// What the pool made of a share.
 pub enum Verdict {
     /// The hash met the network target and bitcoind accepted the block.
@@ -111,6 +123,20 @@ pub fn check(
         .map_err(|error| ValidationError::Rebuild(error.to_string()))?;
 
     let raw = block.serialize(&header);
+
+    // A block built for testnet's minimum-difficulty window carries a
+    // deliberately future timestamp, and nodes reject anything more than two
+    // hours ahead as `time-too-new`. That rejection is temporary — the block is
+    // not invalid, only early — so the right response is to wait rather than
+    // discard perfectly good work.
+    if let Some(not_before) = active.submit_not_before {
+        let wait = not_before - unix_now();
+        if wait > 0 {
+            let wait = wait.min(MAX_SUBMISSION_HOLD);
+            println!("  block solved early — holding {wait}s until it can be submitted");
+            std::thread::sleep(std::time::Duration::from_secs(wait as u64));
+        }
+    }
 
     match client
         .submit_block(&hex::encode(&raw))

@@ -10,6 +10,19 @@ use crate::template::BlockTemplate;
 use serde::Deserialize;
 use serde_json::json;
 
+/// The subset of `getblockheader` this project uses.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BlockHeaderInfo {
+    /// The block's hash, in display order.
+    pub hash: String,
+    /// Its height.
+    pub height: u32,
+    /// Its timestamp. The field testnet's minimum-difficulty rule turns on.
+    pub time: u32,
+    /// Its compact difficulty target, as hex.
+    pub bits: String,
+}
+
 /// The result of validating an address.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AddressInfo {
@@ -83,6 +96,15 @@ impl RpcClient {
     /// keys they control.
     pub fn get_new_address(&self) -> Result<String, RpcError> {
         self.call("getnewaddress", json!(["", "bech32"]))
+    }
+
+    /// Fetches a block header.
+    ///
+    /// Needed because `getblocktemplate` reports the parent's *hash* but not
+    /// its timestamp, and testnet's minimum-difficulty rule is defined relative
+    /// to exactly that timestamp.
+    pub fn get_block_header(&self, hash: &str) -> Result<BlockHeaderInfo, RpcError> {
+        self.call("getblockheader", json!([hash, true]))
     }
 
     /// Validates an address and returns its `scriptPubKey`.

@@ -21,6 +21,7 @@
 //! connections. Each connection gets a reader and a writer. Nothing else.
 
 mod job_builder;
+mod min_difficulty;
 mod session;
 mod state;
 mod validate;
@@ -101,7 +102,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     {
         let state = Arc::clone(&state);
         let client = Arc::clone(&client);
-        std::thread::spawn(move || poll_templates(&state, &client, &payout_script, &wakeups));
+        let exploit = options.network == Network::Testnet4;
+        std::thread::spawn(move || {
+            poll_templates(&state, &client, &payout_script, &wakeups, exploit)
+        });
     }
 
     let listener = TcpListener::bind(options.listen)?;
@@ -131,8 +135,10 @@ fn poll_templates(
     client: &RpcClient,
     payout_script: &[u8],
     wakeups: &std::sync::mpsc::Receiver<()>,
+    exploit_min_difficulty: bool,
 ) {
     let mut last_tip = None;
+    let mut last_bits: Option<u32> = None;
     let mut last_built = std::time::Instant::now();
 
     loop {
@@ -144,13 +150,65 @@ fn poll_templates(
                 // miners are told to discard it. A periodic refresh on the same
                 // tip only adds transactions, so old work stays valid.
                 let tip_changed = last_tip.as_ref() != Some(&tip);
+
+                // The difficulty can change *without* the tip moving. On
+                // testnet4 (and testnet3), BIP 94 drops the next block to
+                // difficulty 1 once 20 minutes have passed with no block — so
+                // the same parent suddenly becomes vastly easier to build on,
+                // and the node reports it the instant the clock crosses that
+                // line.
+                //
+                // Waiting for the periodic refresh here would mean grinding an
+                // impossible target for up to REFRESH_INTERVAL while a free
+                // block sat on the table. Since every other watcher is racing
+                // for the same block, that delay decides who wins.
+                let bits = template.compact_bits().ok();
+                let bits_changed = last_bits.is_some() && bits.is_some() && bits != last_bits;
+
                 let stale = last_built.elapsed() >= REFRESH_INTERVAL;
 
-                if tip_changed || stale {
+                if tip_changed || bits_changed || stale {
                     let job_id = state.allocate_job_id();
 
-                    match job_builder::build(job_id, &template, payout_script, tip_changed) {
-                        Ok(active) => {
+                    // Both a new tip and a difficulty change invalidate work in
+                    // flight, so miners are told to start over in either case.
+                    let clean = tip_changed || bits_changed;
+
+                    match job_builder::build(job_id, &template, payout_script, clean) {
+                        Ok(mut active) => {
+                            // On testnet the template's difficulty is the one
+                            // the node would pick for roughly *now*. When the
+                            // chain has been warped into the future that is the
+                            // full chain difficulty, and useless. Choosing the
+                            // timestamp ourselves reaches minimum difficulty
+                            // instead — see the `min_difficulty` module.
+                            if exploit_min_difficulty
+                                && let Ok(parent) =
+                                    client.get_block_header(&template.previous_block_hash)
+                                && let Ok(target) = btc_primitives::Target::from_compact(
+                                    min_difficulty::MIN_DIFFICULTY_BITS,
+                                )
+                            {
+                                let window = min_difficulty::plan(parent.time);
+                                let wait = window.seconds_until_open(unix_now());
+
+                                active.job.time = window.ntime;
+                                active.job.bits = min_difficulty::MIN_DIFFICULTY_BITS;
+                                active.network_target = target;
+                                active.submit_not_before = Some(window.legal_at);
+
+                                println!(
+                                    "  min-difficulty window: ntime {} ({}s past parent) — {}",
+                                    window.ntime,
+                                    i64::from(window.ntime) - i64::from(parent.time),
+                                    if window.is_open(unix_now()) {
+                                        "OPEN NOW".to_owned()
+                                    } else {
+                                        format!("opens in {wait}s")
+                                    },
+                                );
+                            }
+
                             let height = active.height;
                             let transactions = active.transactions.len();
                             let job = state.set_current_job(active);
@@ -160,6 +218,13 @@ fn poll_templates(
                                     "new tip at height {} — job {} ({transactions} txs, {} miners)",
                                     height - 1,
                                     job.job.job_id,
+                                    state.subscriber_count(),
+                                );
+                            } else if bits_changed {
+                                println!(
+                                    "DIFFICULTY CHANGED at height {height} — job {} (difficulty {:.4}, {} miners)",
+                                    job.job.job_id,
+                                    btc_primitives::Target::difficulty(job.job.bits),
                                     state.subscriber_count(),
                                 );
                             }
@@ -173,6 +238,7 @@ fn poll_templates(
                             }
 
                             last_tip = Some(tip);
+                            last_bits = bits;
                             last_built = std::time::Instant::now();
                         }
                         Err(error) => eprintln!("cannot build a job: {error}"),
@@ -189,6 +255,13 @@ fn poll_templates(
             while wakeups.try_recv().is_ok() {}
         }
     }
+}
+
+/// Seconds since the Unix epoch.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 /// Works out where block rewards should go.

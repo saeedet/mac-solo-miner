@@ -16,6 +16,6 @@ pub mod network;
 pub mod template;
 
 pub use client::{RpcClient, RpcError};
-pub use methods::{AddressInfo, BlockchainInfo};
+pub use methods::{AddressInfo, BlockHeaderInfo, BlockchainInfo};
 pub use network::Network;
 pub use template::{BlockTemplate, TemplateTransaction};

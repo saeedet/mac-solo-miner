@@ -59,6 +59,12 @@ pub struct ActiveJob {
     pub txids: Vec<Sha256dHash>,
     /// The target a header must meet to be a real block.
     pub network_target: Target,
+    /// Unix time before which a solved block must NOT be submitted.
+    ///
+    /// Set only when exploiting testnet's minimum-difficulty window, where the
+    /// block's timestamp is deliberately in the future. Submitting early gets
+    /// it rejected as `time-too-new`; the block is not invalid, merely early.
+    pub submit_not_before: Option<i64>,
 }
 
 impl ActiveJob {
@@ -141,6 +147,7 @@ pub fn build(
         network_target: template
             .target()
             .map_err(|error| BuildError::Template(error.to_string()))?,
+        submit_not_before: None,
     };
 
     let (prefix, suffix) = split_coinbase(&active)?;
