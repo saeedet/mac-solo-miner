@@ -189,13 +189,18 @@ fn report_forever(stats: &Stats, state: &WorkState) {
             eprintln!("warning: cannot save lifetime totals: {error}");
         }
 
-        // The difficulty currently being mined, for the odds figure below.
-        let difficulty = state
-            .snapshot()
-            .map_or(0.0, |(work, _)| btc_primitives::Target::difficulty(work.job.bits));
+        // The difficulty currently being mined, and the leading-zero threshold
+        // that goes with it. Reporting a best-hash figure without the bar it is
+        // measured against invites the wrong reading entirely.
+        let (difficulty, needed) = state.snapshot().map_or((0.0, 0), |(work, _)| {
+            (
+                btc_primitives::Target::difficulty(work.job.bits),
+                work.target.leading_zero_bits(),
+            )
+        });
 
         println!(
-            "{:>7.2} MH/s (avg {:>6.2})   session {:>8}   best {zero_bits} bits   {best}",
+            "{:>7.2} MH/s (avg {:>6.2})   session {:>8}   best {zero_bits}/{needed} bits   {best}",
             recent as f64 / REPORT_INTERVAL.as_secs_f64() / 1e6,
             stats.average_hashrate() / 1e6,
             si(total),
@@ -205,8 +210,14 @@ fn report_forever(stats: &Stats, state: &WorkState) {
         // progress: the odds are linear in total work and carry no memory of
         // how that work was spread over time.
         if difficulty > 0.0 {
+            // The shortfall as a power of two, because the bits themselves read
+            // deceptively: 36 of 79 looks like halfway and is in fact 2^43 —
+            // some eight trillion times — too easy.
+            let short = needed.saturating_sub(lifetime.best_zero_bits);
+
             println!(
-                "          lifetime {:>8}   best ever {} bits   ~1 in {:.3e} of a block",
+                "          lifetime {:>8}   best ever {}/{needed} bits (2^{short} short)   \
+                 ~1 in {:.3e} of a block",
                 si(lifetime.total_hashes),
                 lifetime.best_zero_bits,
                 lifetime.odds_denominator(difficulty),

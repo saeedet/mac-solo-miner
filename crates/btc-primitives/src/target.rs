@@ -124,6 +124,32 @@ impl Target {
         true // exactly equal to the target, which counts as meeting it
     }
 
+    /// How many leading zero bits a hash needs before it can possibly meet
+    /// this target.
+    ///
+    /// The comparison that decides a block is a full 256-bit one, so this is a
+    /// threshold rather than the whole story: a hash with exactly this many
+    /// leading zeros may still be above the target on its remaining bits. It is
+    /// the right number to *report*, though, because it is directly comparable
+    /// with the leading-zero count of any hash found — and that comparison is
+    /// the only intuition a miner gets about how far off it is.
+    ///
+    /// Remember the scale is exponential. Being ten bits short is not "nearly
+    /// there"; it is a thousand times too easy.
+    pub fn leading_zero_bits(&self) -> u32 {
+        let mut count = 0;
+
+        // Stored big-endian, so leading zeros are simply the leading bytes.
+        for byte in &self.0 {
+            count += byte.leading_zeros();
+            if *byte != 0 {
+                break;
+            }
+        }
+
+        count
+    }
+
     /// The difficulty this target represents, relative to difficulty 1.
     ///
     /// Returned as `f64` because it is only ever used for display: at the time

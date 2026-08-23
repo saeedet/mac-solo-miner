@@ -140,12 +140,18 @@ month are worth exactly what two hours now would be — which is why
 `~/.solo-mac-miner/lifetime.json` accumulates across sessions:
 
 ```
-  67.84 MH/s (avg  67.54)   session    2.70G   best 31 bits   0000000117804...
-          lifetime    2.70G   best ever 31 bits   ~1 in 1.999e14 of a block
+  30.83 MH/s (avg  30.50)   session  610.27M   best 30/78 bits   00000002894d5...
+          lifetime  215.90G   best ever 38/78 bits (2^40 short)   ~1 in 2.503e12 of a block
 ```
 
-The best-ever hash is worth nothing in consensus terms — a near miss is a miss.
-It is tracked because it is the only feedback solo mining ever gives.
+`38/78` is the best hash ever found against the leading zero bits a block
+actually needs. Read that as a fraction and it looks like halfway; it is not.
+Bits are exponential, which is what the `2^40 short` is there to say — the best
+hash in 215 billion attempts is still about a trillion times too easy.
+
+The best-ever figure is worth nothing in consensus terms: a near miss is a miss,
+and it says nothing about the next hash. It is tracked because it is the only
+feedback solo mining ever gives.
 
 ### Measure the hasher
 
