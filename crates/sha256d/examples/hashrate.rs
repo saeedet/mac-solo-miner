@@ -16,13 +16,6 @@
 //! Release mode matters enormously here — a debug build is roughly 20x slower
 //! and the number would be meaningless.
 
-/// What the midstate path is actually built on here. The optimisation is
-/// architecture-independent; the compression function underneath it is not.
-#[cfg(target_arch = "aarch64")]
-const MIDSTATE_LABEL: &str = "midstate + neon";
-#[cfg(not(target_arch = "aarch64"))]
-const MIDSTATE_LABEL: &str = "midstate + portable";
-
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -61,11 +54,6 @@ fn main() {
 
     measure("reference (portable)", 300_000, |h| sha256d::reference::sha256d(h));
 
-    // The hardware path only exists on aarch64. Everywhere else the library
-    // falls back to the portable implementation, and this benchmark should say
-    // so rather than fail to build — the point of measuring is to find out what
-    // a given machine can do, including a machine with no acceleration at all.
-    #[cfg(target_arch = "aarch64")]
     if sha256d::neon::is_available() {
         // SAFETY: `is_available` confirmed the sha2 extensions are present.
         measure("neon (ARMv8 crypto)", 20_000_000, |h| unsafe {
@@ -74,14 +62,6 @@ fn main() {
     } else {
         println!("neon (ARMv8 crypto)      unavailable on this CPU");
     }
-
-    #[cfg(not(target_arch = "aarch64"))]
-    println!(
-        "{:<24} {:>10}   (no hardware SHA-256 path is implemented for this\n\
-         {:<24} {:>10}    architecture — x86 has SHA-NI, which this project\n\
-         {:<24} {:>10}    has not written)",
-        "hardware SHA-256", "n/a", "", "", "", "",
-    );
 
     // The midstate path is measured differently: the hasher is built once,
     // outside the timed loop, exactly as the mining loop uses it.
@@ -98,7 +78,7 @@ fn main() {
         let rate = iterations as f64 / elapsed.as_secs_f64();
         println!(
             "{:<24} {:>10.2} MH/s   ({iterations} hashes in {elapsed:.2?})",
-            MIDSTATE_LABEL, rate / 1e6
+            "midstate + neon", rate / 1e6
         );
     }
 
