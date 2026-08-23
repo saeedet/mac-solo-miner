@@ -98,7 +98,7 @@ fn main() {
         let rate = iterations as f64 / elapsed.as_secs_f64();
         println!(
             "{:<24} {:>10.2} MH/s   ({iterations} hashes in {elapsed:.2?})",
-            "midstate + neon", rate / 1e6
+            MIDSTATE_LABEL, rate / 1e6
         );
     }
 
