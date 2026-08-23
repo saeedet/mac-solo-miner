@@ -98,8 +98,13 @@ POOL_LOG="$(mktemp -t solo-pool)"
 # Set by cleanup so the exit path below can tell a shutdown we asked for from
 # one that happened to us.
 STOPPING=false
+CLEANED_UP=false
 
 cleanup() {
+  # A signal handler that exits triggers the EXIT trap as well, so this runs
+  # twice without a guard: two pkills racing each other and duplicate messages.
+  [[ "$CLEANED_UP" == true ]] && return
+  CLEANED_UP=true
   STOPPING=true
   echo
   echo "stopping..."
@@ -114,9 +119,11 @@ cleanup() {
   echo "pool log kept at $POOL_LOG"
 }
 # A signal handler that does not exit would let bash resume after the
-# interrupted command, so Ctrl-C is made explicit. 130 is the conventional
-# status for SIGINT.
-trap 'cleanup; exit 130' INT TERM
+# interrupted command, so stopping is made explicit. The statuses are the
+# conventional 128 + signal number, kept distinct so a supervisor can tell
+# "the user interrupted this" from "we terminated it".
+trap 'cleanup; exit 130' INT   # 128 + SIGINT(2)
+trap 'cleanup; exit 143' TERM  # 128 + SIGTERM(15)
 trap cleanup EXIT
 
 ./target/release/solo-pool --network "$NETWORK" --address "$ADDRESS" > "$POOL_LOG" 2>&1 &
@@ -167,15 +174,20 @@ MINER_PID=$!
 wait "$MINER_PID"
 MINER_STATUS=$?
 
-# The miner exits 0 when the pool closes the connection — which is what a clean
-# Ctrl-C looks like, and also what a pool that died of its own accord looks
-# like. Reporting both as success would let a supervisor read a fatal mining
-# failure as a completed run, so they are told apart here, where the reason is
-# known.
-if [[ "$STOPPING" == false ]] && ! kill -0 "$POOL_PID" 2>/dev/null; then
+# This script has no successful terminal state: it mines until something stops
+# it. So any miner exit we did not ask for is a failure, whether or not the pool
+# happened to survive it. Testing the pool's liveness answers a different
+# question — which thing broke, not whether something did — so it decides the
+# message rather than the status.
+if [[ "$STOPPING" == false ]]; then
   echo
-  echo "the pool exited on its own — this was not a clean shutdown."
-  echo "--- its last output ---"
+  if kill -0 "$POOL_PID" 2>/dev/null; then
+    echo "the miner stopped unexpectedly (status $MINER_STATUS) while the pool is"
+    echo "still running — suspect the Stratum session rather than the node."
+  else
+    echo "the pool exited on its own — this was not a clean shutdown."
+  fi
+  echo "--- the pool's last output ---"
   tail -8 "$POOL_LOG"
   exit 1
 fi
