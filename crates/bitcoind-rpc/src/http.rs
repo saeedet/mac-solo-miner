@@ -46,8 +46,17 @@ impl HttpClient {
         Self { address, timeout }
     }
 
-    /// POSTs a JSON body and returns the response.
-    pub fn post_json(&self, authorization: &str, body: &str) -> Result<Response, HttpError> {
+    /// POSTs a JSON body to `path` and returns the response.
+    ///
+    /// `path` is almost always `/`. The exception is a wallet RPC, which
+    /// Bitcoin Core dispatches by URI — see
+    /// [`RpcClient::call_wallet`](crate::RpcClient::call_wallet).
+    pub fn post_json(
+        &self,
+        path: &str,
+        authorization: &str,
+        body: &str,
+    ) -> Result<Response, HttpError> {
         let stream = TcpStream::connect_timeout(&self.address, self.timeout)
             .map_err(|source| HttpError::Connect { source })?;
 
@@ -57,20 +66,21 @@ impl HttpClient {
         // to coalesce them only adds latency.
         stream.set_nodelay(true).map_err(HttpError::io)?;
 
-        self.write_request(&stream, authorization, body)?;
+        self.write_request(&stream, path, authorization, body)?;
         read_response(stream)
     }
 
     fn write_request(
         &self,
         mut stream: &TcpStream,
+        path: &str,
         authorization: &str,
         body: &str,
     ) -> Result<(), HttpError> {
         // Written as one buffer and sent in a single write, so the request
         // never arrives split across packets in a way that stalls the server.
         let request = format!(
-            "POST / HTTP/1.1\r\n\
+            "POST {path} HTTP/1.1\r\n\
              Host: {host}\r\n\
              Authorization: {authorization}\r\n\
              Content-Type: application/json\r\n\

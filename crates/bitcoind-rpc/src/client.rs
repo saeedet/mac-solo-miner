@@ -94,6 +94,53 @@ impl RpcClient {
     /// likely cause is that bitcoind restarted and rotated the cookie. Only a
     /// second consecutive 401 is reported as an error.
     pub fn call<T: DeserializeOwned>(&self, method: &str, params: Value) -> Result<T, RpcError> {
+        self.call_at("/", method, params)
+    }
+
+    /// Calls a **wallet** RPC, addressed to a named wallet.
+    ///
+    /// # Why the path matters
+    ///
+    /// Bitcoin Core dispatches wallet RPCs by URI, not by argument. With
+    /// exactly one wallet loaded it will guess, and a request to `/` works —
+    /// which is how this is easy to get wrong, because it works right up until
+    /// the day a second wallet is loaded and then fails with:
+    ///
+    /// ```text
+    /// Multiple wallets are loaded. Please select which wallet to use by
+    /// requesting the RPC through the /wallet/<walletname> URI path. (code -19)
+    /// ```
+    ///
+    /// Naming the wallet is also the safer behaviour on its own terms: a miner
+    /// that let the node guess could be handed a payout address from a wallet
+    /// the user did not mean to mine into.
+    pub fn call_wallet<T: DeserializeOwned>(
+        &self,
+        wallet: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<T, RpcError> {
+        // Wallet names are user-chosen and could contain characters that mean
+        // something in a URI. Only the small set this project uses is allowed
+        // through, rather than half-escaping something that then goes into a
+        // request line.
+        if !wallet
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+        {
+            return Err(RpcError::BadWalletName(wallet.to_owned()));
+        }
+
+        self.call_at(&format!("/wallet/{wallet}"), method, params)
+    }
+
+    /// The shared body of [`Self::call`] and [`Self::call_wallet`].
+    fn call_at<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<T, RpcError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
 
         let request = json!({
@@ -104,14 +151,14 @@ impl RpcClient {
         })
         .to_string();
 
-        let mut response = self.post(&request)?;
+        let mut response = self.post(path, &request)?;
 
         if response.status == 401 {
             // Reloading can itself fail — the node may be gone entirely, in
             // which case the cookie file is stale or absent. Report that rather
             // than the 401, since it is the more useful diagnosis.
             self.reload_credentials()?;
-            response = self.post(&request)?;
+            response = self.post(path, &request)?;
         }
 
         // A second 401 means the credentials on disk genuinely do not work.
@@ -157,14 +204,14 @@ impl RpcClient {
 
 impl RpcClient {
     /// Sends one request with the credentials currently held.
-    fn post(&self, request: &str) -> Result<crate::http::Response, RpcError> {
+    fn post(&self, path: &str, request: &str) -> Result<crate::http::Response, RpcError> {
         let header = self
             .credentials
             .read()
             .expect("credentials lock poisoned")
             .authorization_header();
 
-        Ok(self.http.post_json(&header, request)?)
+        Ok(self.http.post_json(path, &header, request)?)
     }
 }
 
@@ -188,6 +235,8 @@ pub enum RpcError {
     /// between. The cookie on disk genuinely does not work — a different node,
     /// a wrong datadir, or `rpcauth` configured instead of cookie auth.
     Unauthorized,
+    /// A wallet name contained characters that cannot go in a URI path.
+    BadWalletName(String),
     /// bitcoind returned a JSON-RPC error.
     Rpc {
         /// The method that failed.
@@ -239,6 +288,11 @@ impl fmt::Display for RpcError {
         match self {
             Self::Auth(source) => write!(f, "{source}"),
             Self::Http(source) => write!(f, "{source}"),
+            Self::BadWalletName(name) => write!(
+                f,
+                "wallet name {name:?} contains characters that cannot appear in \
+                 a /wallet/<name> URI path"
+            ),
             Self::Unauthorized => write!(
                 f,
                 "bitcoind rejected our credentials even after re-reading the cookie \

@@ -334,8 +334,9 @@ fn resolve_payout_script(
     let address = match &options.address {
         Some(address) => address.clone(),
         None if options.network == Network::Regtest => {
-            client.ensure_wallet("solo-miner-regtest")?;
-            client.get_new_address()?
+            const WALLET: &str = "solo-miner-regtest";
+            client.ensure_wallet(WALLET)?;
+            client.get_new_address(WALLET)?
         }
         None => {
             return Err(format!(

@@ -100,8 +100,10 @@ impl RpcClient {
     /// Used on regtest to get a throwaway payout address. On testnet4 and
     /// mainnet the address comes from the user instead, and from a wallet whose
     /// keys they control.
-    pub fn get_new_address(&self) -> Result<String, RpcError> {
-        self.call("getnewaddress", json!(["", "bech32"]))
+    /// The wallet is named rather than left to the node to guess — see
+    /// [`RpcClient::call_wallet`] for why that distinction has teeth.
+    pub fn get_new_address(&self, wallet: &str) -> Result<String, RpcError> {
+        self.call_wallet(wallet, "getnewaddress", json!(["", "bech32"]))
     }
 
     /// How many peers the node is connected to.
